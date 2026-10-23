@@ -1081,6 +1081,37 @@ try {
   console.warn('[余光] 主界面创建失败（无 DOM 环境？），退回直接开始', err);
   menu = null;
 }
+
+// ── 介绍页 ─────────────────────────────────────────────────
+//
+// 纯黑一页，点击或任意键开始。这一次点击**同时解锁音频** ——
+// menu.js 的 unlockAudio 监听在 window 上，所以两件事一次完成：
+// 关掉介绍页（作品集里给评审看作者信息）+ 主界面从此有声。
+//
+// 两个坑：
+//   ① 必须真的 remove()，不能只设透明度 —— 否则它会一直盖在上面挡住热区，
+//      主界面看上去"能看见但点不动"。
+//   ② 键盘要**捕获阶段 + 阻止冒泡**。否则那一下会同时被 hit() 收到，
+//      而 hit() 在 idle 时调的是 menu.playIntro() —— 介绍页一关就直接
+//      播开场动画，把主菜单跳过去了。
+const introEl = document.getElementById('intro');
+// 只在**真的是个元素**时才接线。集成测试里的假 DOM 会返回一个没有
+// addEventListener / removeEventListener 的桩，直接调会抛 ——
+// 抛在模块顶层会把整个 main.js 带崩，表现是测试文件里一堆无关的失败。
+if (introEl && typeof introEl.addEventListener === 'function' && typeof introEl.removeEventListener === 'function') {
+  const dismissIntro = (e) => {
+    // 测试环境里的假事件没有 stopPropagation，用可选链兜一下；
+    // 真浏览器里它是有的，阻止冒泡这一步不能省。
+    e?.stopPropagation?.();
+    introEl.removeEventListener('pointerdown', dismissIntro, true);
+    window.removeEventListener('keydown', dismissIntro, true);
+    introEl.classList.add('gone');
+    setTimeout(() => introEl.remove(), 460);
+  };
+  introEl.addEventListener('pointerdown', dismissIntro, true);
+  window.addEventListener('keydown', dismissIntro, true);
+}
+
 loadLevel().then(() => {
   if (autostart) start();
 });
