@@ -1,0 +1,759 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>余光 · 谱面编辑器</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { height: 100%; background: #14161a; color: #dfe4ea;
+        font: 13px/1.6 "Microsoft YaHei", "PingFang SC", sans-serif; overflow: hidden; }
+      #app { display: flex; flex-direction: column; height: 100%; }
+
+      #bar { display: flex; align-items: center; gap: 14px; padding: 8px 14px;
+        background: #1b1e24; border-bottom: 1px solid #2a2f38; flex: none; }
+      #bar b { font-weight: 600; color: #fff; }
+      #bar .sep { flex: 1; }
+      button { background: #2a303a; color: #dfe4ea; border: 1px solid #3a424f;
+        border-radius: 4px; padding: 4px 12px; cursor: pointer; font: inherit; }
+      button:hover { background: #333b47; }
+      button.primary { background: #2d5a3d; border-color: #3d7a52; }
+      #status { color: #7f8a99; }
+      #status.ok { color: #6fcf8f; }
+      #status.err { color: #ff7b7b; }
+
+      #mapWrap { flex: 1; position: relative; min-height: 0; }
+      #map { display: block; width: 100%; height: 100%; cursor: grab; }
+      #map.dragging { cursor: grabbing; }
+      #hint { position: absolute; left: 14px; bottom: 10px; color: #5d6673;
+        pointer-events: none; }
+
+      #bottom { flex: none; background: #1b1e24; border-top: 1px solid #2a2f38;
+        padding: 8px 14px 10px; }
+      #time { display: flex; gap: 14px; color: #9aa4b2; margin-bottom: 6px; }
+      #time b { color: #fff; font-weight: 600; }
+      #strip { display: block; width: 100%; height: 56px; cursor: crosshair; }
+      #scrub { width: 100%; margin-top: 4px; }
+      kbd { background: #2a303a; border: 1px solid #3a424f; border-bottom-width: 2px;
+        border-radius: 3px; padding: 0 5px; font: inherit; font-size: 11px; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="bar">
+        <b>余光 · 谱面编辑器</b>
+        <span id="file"></span>
+        <button id="play">▶ 播放</button>
+        <button id="reset">⌖ 重置视图</button>
+        <button id="reload">⟳ 重新载入</button>
+        <button id="save" class="primary">保存</button>
+        <span class="sep"></span>
+        <span id="status"></span>
+      </div>
+
+      <div id="mapWrap">
+        <canvas id="map"></canvas>
+        <div id="hint">
+          <b>左键点格子</b>：直行 → 左转 → 右转 → 直行　·　<b>右键点格子</b>：从这一格开始播　·　
+          <b>左键拖动</b>：平移　·　<b>滚轮</b>：缩放　·　<b>空格</b>：播放/暂停　·　<b>Ctrl+S</b>：保存
+        </div>
+      </div>
+
+      <div id="bottom">
+        <div id="time">
+          <span>位置 <b id="tNow">0:00.000</b> / <b id="tAll">0:00.000</b></span>
+          <span>拍号 <b id="tBeat">—</b></span>
+          <span>格号 <b id="tTile">—</b></span>
+          <span>格数 <b id="tCount">—</b></span>
+        </div>
+        <canvas id="strip"></canvas>
+        <input id="scrub" type="range" min="0" max="1000" value="0" step="1" />
+      </div>
+    </div>
+
+    <script type="module">
+      import { CONFIG } from '../src/config.js';
+      import { buildChart, planetStateAtBeat } from '../src/core/chart.js';
+      import { AudioEngine } from '../src/audio/audio.js';
+      import { SongClock } from '../src/core/clock.js';
+
+      const $ = (id) => document.getElementById(id);
+      const map = $('map');
+      const mctx = map.getContext('2d');
+      const strip = $('strip');
+      const sctx = strip.getContext('2d');
+
+      const fileName = new URLSearchParams(location.search).get('file') ?? 'level01.json';
+      const chartUrl = '../levels/' + fileName;
+
+      // ── 状态 ────────────────────────────────────────────────
+      let raw = null;        // 原始 JSON，保留 name/bpm/… 等字段
+      let chart = null;      // buildChart 的结果
+      let turns = [];        // 每格的转角（相对），turns[0] 恒为 0
+      /** 视图：格坐标 → 屏幕。**只在载入时定一次，之后全由鼠标控制** */
+      let view = { ox: 0, oy: 0, s: 1 };
+      let playing = false;
+      let pausedSec = 0;     // 暂停时停在第几秒（音频文件时间）
+      let peakCache = null;  // 波形
+
+      const audio = new AudioEngine();
+      let clock = null;
+
+      // ── 载入 ────────────────────────────────────────────────
+      /**
+       * 记着「最后一次从磁盘读到的原文」，用来判断文件有没有被外部改过。
+       * 你在 VSCode 里直接改 JSON 也能生效 —— 见下面的自动同步。
+       */
+      let loadedText = '';
+      /** 编辑器里有没有还没保存的改动。有的话自动同步会让路，不覆盖你的东西 */
+      let dirty = false;
+
+      async function load({ keepView = false } = {}) {
+        const res = await fetch(chartUrl + '?t=' + Date.now());
+        if (!res.ok) throw new Error(`读不到 ${chartUrl}（HTTP ${res.status}）`);
+        loadedText = await res.text();
+        raw = JSON.parse(loadedText);
+        const hadView = keepView && view.s > 0;
+        const saved = { ...view };
+        rebuildFromAngles(raw.angles.slice());
+        if (hadView) Object.assign(view, saved);
+        else fitOnce();
+        dirty = false;
+        draw();
+        $('file').textContent = `levels/${fileName}`;
+      }
+
+      /** 从角度数组反推出「每格转角」，编辑器内部一直用这个表示 */
+      function rebuildFromAngles(angles) {
+        turns = angles.map((a, i) => {
+          if (i === 0) return 0;
+          let d = a - angles[i - 1];
+          while (d > 180) d -= 360;
+          while (d <= -180) d += 360;
+          return d;
+        });
+        rebuild();
+      }
+
+      /** 从 turns 重建角度 → buildChart */
+      function rebuild() {
+        const angles = [raw.angles[0]];
+        for (let i = 1; i < turns.length; i++) {
+          let a = angles[i - 1] + turns[i];
+          // 规整到 (-180, 180]，免得越加越大到最后看不懂
+          while (a > 180) a -= 360;
+          while (a <= -180) a += 360;
+          angles.push(a);
+        }
+        raw.angles = angles;
+        chart = buildChart(raw);
+        draw();
+        drawStrip();
+      }
+
+      /**
+       * 视图换算：格坐标 → 屏幕坐标。**只在你手动缩放/拖动时改变。**
+       *
+       * 原来这里是「自动缩放到刚好装下」，结果每改一格形状变了、
+       * 包围盒跟着变，整张图就重新缩放居中 —— 看起来像谱面自己在转。
+       * 现在只在载入时算一次初始位置，之后完全由你控制。
+       */
+      function fitOnce() {
+        const b = chart.bounds;
+        const pad = 50;
+        const w = map.clientWidth - pad * 2;
+        const h = map.clientHeight - pad * 2;
+        // 按正方形区域拟合：一条笔直的路（高度 0）也不会被放大到天上
+        const span = Math.max(b.width, b.height, 4);
+        view.s = Math.max(1, Math.min(w / span, h / span));
+        // 居中到包围盒的中心
+        view.ox = map.clientWidth / 2 - ((b.minX + b.maxX) / 2) * view.s;
+        view.oy = map.clientHeight / 2 - ((b.minY + b.maxY) / 2) * view.s;
+      }
+
+      const toScreen = (p) => ({ x: view.ox + p.x * view.s, y: view.oy + p.y * view.s });
+
+      /** 屏幕坐标 → 格坐标（缩放要以鼠标为锚点，需要反算） */
+      const toWorld = (mx, my) => ({ x: (mx - view.ox) / view.s, y: (my - view.oy) / view.s });
+
+      // ── 画俯视图 ────────────────────────────────────────────
+      const TURN_COLOR = { 0: '#5a6675', 90: '#4fc3f7', '-90': '#ffb74d' };
+
+      function draw() {
+        const dpr = Math.min(devicePixelRatio || 1, 2);
+        const w = map.clientWidth;
+        const h = map.clientHeight;
+        map.width = Math.round(w * dpr);
+        map.height = Math.round(h * dpr);
+        mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        mctx.clearRect(0, 0, w, h);
+
+        // 编辑器里把路画**窄一点**（0.45 倍）——
+        // 按真实宽度画的话，路面会盖住让出来的方口，井盖没地方放。
+        const width = Math.max(3, CONFIG.world.pathWidth * view.s * 0.45);
+
+        // ① 路面：逐段画，颜色表示这一格是什么。
+        //    用 butt 不用 round —— 圆头在 90° 转弯那种短线段上会撑出两个大圆，
+        //    正好糊住最需要看清的地方。接头处靠下面的节点补上。
+        mctx.lineCap = 'butt';
+        mctx.lineWidth = width;
+        for (let i = 0; i < chart.hitCount; i++) {
+          const a = toScreen(chart.positions[i]);
+          const b = toScreen(chart.positions[i + 1]);
+          mctx.strokeStyle = TURN_COLOR[String(turns[i])] ?? '#888';
+          mctx.globalAlpha = 0.45;
+          mctx.beginPath();
+          mctx.moveTo(a.x, a.y);
+          mctx.lineTo(b.x, b.y);
+          mctx.stroke();
+        }
+        mctx.globalAlpha = 1;
+        // 补接头：小方块把相邻两段之间那点缝填上
+        mctx.lineWidth = 1;
+        for (let i = 0; i <= chart.hitCount; i++) {
+          const s = toScreen(chart.positions[i]);
+          mctx.fillStyle = TURN_COLOR[String(turns[Math.min(i, turns.length - 1)])] ?? '#888';
+          mctx.globalAlpha = 0.45;
+          mctx.fillRect(s.x - width / 2, s.y - width / 2, width, width);
+        }
+        mctx.globalAlpha = 1;
+
+        // ② 节点：点它就是改这一格（转弯用颜色区分，直行是灰的）
+        for (let i = 0; i < chart.positions.length; i++) {
+          const s = toScreen(chart.positions[i]);
+          mctx.fillStyle = i === currentTile() ? '#ff5252' : '#1b1e24';
+          mctx.strokeStyle = TURN_COLOR[String(turns[i])] ?? '#5a6675';
+          mctx.lineWidth = 1.5;
+          mctx.beginPath();
+          mctx.arc(s.x, s.y, i === 0 ? 5 : 3.5, 0, Math.PI * 2);
+          mctx.fill();
+          mctx.stroke();
+        }
+
+        // ④ 播放头：音乐现在到哪一格
+        const t = currentTile();
+        if (t !== null && chart.positions[t]) {
+          const s = toScreen(chart.positions[t]);
+          mctx.strokeStyle = '#ff5252';
+          mctx.lineWidth = 2;
+          mctx.beginPath();
+          mctx.arc(s.x, s.y, 11, 0, Math.PI * 2);
+          mctx.stroke();
+        }
+
+        // ⑤ 物件：a = 井盖，b = 左侧障碍
+        //
+        // 位置直接读 chart.props 里算好的世界坐标（tile + along + lateral），
+        // 所以标记画出来的地方就是游戏里物件真正会出现的地方。
+        for (const p of chart.props) {
+          if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+          const s = toScreen(p);
+          const isA = p.type === 'manhole';
+          const isB = p.type === 'obstacle-left';
+          if (!isA && !isB) continue;
+
+          mctx.beginPath();
+          mctx.arc(s.x, s.y, 9, 0, Math.PI * 2);
+          mctx.fillStyle = isA ? 'rgba(90,190,255,0.92)' : 'rgba(255,150,90,0.92)';
+          mctx.fill();
+
+          mctx.fillStyle = '#10141a';
+          mctx.font = 'bold 12px "Microsoft YaHei", sans-serif';
+          mctx.textAlign = 'center';
+          mctx.textBaseline = 'middle';
+          mctx.fillText(isA ? 'a' : 'b', s.x, s.y + 0.5);
+        }
+      }
+
+      // ── 时间 ↔ 拍号 ─────────────────────────────────────────
+      const spb = () => 60 / (raw?.bpm ?? 120);
+      /** 当前音频文件时间（秒） */
+      function currentSec() {
+        if (playing && clock) return clock.songTime + (raw.audioOffsetSec ?? 0);
+        return pausedSec;
+      }
+      function currentBeat() {
+        return (currentSec() - (raw?.audioOffsetSec ?? 0)) / spb();
+      }
+      function currentTile() {
+        if (!chart) return null;
+        const ps = planetStateAtBeat(chart, currentBeat());
+        return ps.index;
+      }
+
+      // ── 时间条 ──────────────────────────────────────────────
+      function buildPeaks() {
+        if (peakCache || !audio.buffer) return;
+        const ch = audio.buffer.getChannelData(0);
+        const N = 1400;
+        const step = Math.max(1, Math.floor(ch.length / N));
+        const out = new Float32Array(N);
+        for (let i = 0; i < N; i++) {
+          let m = 0;
+          for (let k = 0; k < step; k++) {
+            const v = Math.abs(ch[i * step + k] || 0);
+            if (v > m) m = v;
+          }
+          out[i] = m;
+        }
+        peakCache = out;
+      }
+
+      function drawStrip() {
+        const dpr = Math.min(devicePixelRatio || 1, 2);
+        const w = strip.clientWidth;
+        const h = strip.clientHeight;
+        strip.width = Math.round(w * dpr);
+        strip.height = Math.round(h * dpr);
+        sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        sctx.clearRect(0, 0, w, h);
+
+        const dur = audio.durationSec || 0;
+        if (!dur || !chart) return;
+        const X = (sec) => (sec / dur) * w;
+
+        // 波形
+        if (peakCache) {
+          sctx.fillStyle = '#3a424f';
+          for (let i = 0; i < peakCache.length; i++) {
+            const x = (i / peakCache.length) * w;
+            const a = peakCache[i] * h * 0.45;
+            sctx.fillRect(x, h / 2 - a, Math.max(1, w / peakCache.length), a * 2);
+          }
+        }
+
+        // 每一格的落点
+        const off = raw.audioOffsetSec ?? 0;
+        sctx.fillStyle = 'rgba(120,200,255,0.35)';
+        for (let i = 0; i < chart.hitCount; i++) {
+          const x = X(off + chart.segments[i].hitBeat * spb());
+          sctx.fillRect(x - 0.5, 0, 1, h);
+        }
+        // 渐暗点
+        if (dur > CONFIG.fade.durationSec) {
+          const x = X(CONFIG.fade.durationSec);
+          sctx.strokeStyle = 'rgba(255,120,120,0.5)';
+          sctx.lineWidth = 1;
+          sctx.beginPath();
+          sctx.moveTo(x, 0);
+          sctx.lineTo(x, h);
+          sctx.stroke();
+        }
+        // 播放头
+        const x = X(currentSec());
+        sctx.strokeStyle = '#ff5252';
+        sctx.lineWidth = 1.5;
+        sctx.beginPath();
+        sctx.moveTo(x, 0);
+        sctx.lineTo(x, h);
+        sctx.stroke();
+      }
+
+      // ── 交互：点格子改方向 ──────────────────────────────────
+      // ── 交互：左键拖动平移，点击改方向，滚轮缩放 ──────────────
+
+      /**
+       * 左键既要拖动又要点击改方向，靠**位移**区分：
+       *   按下后几乎没动 → 当成点击（改这一格）
+       *   移动超过 4px    → 当成拖动（平移视图），松手不再改任何东西
+       * 4px 是「手抖」和「真的在拖」之间的常见分界。
+       */
+      const DRAG_THRESHOLD = 4;
+      let drag = null;
+
+      map.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0) return;
+        drag = { x: e.clientX, y: e.clientY, ox: view.ox, oy: view.oy, moved: false, id: e.pointerId };
+        map.setPointerCapture(e.pointerId);
+      });
+
+      map.addEventListener('pointermove', (e) => {
+        if (!drag || e.pointerId !== drag.id) return;
+        const dx = e.clientX - drag.x;
+        const dy = e.clientY - drag.y;
+        if (!drag.moved && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
+          drag.moved = true;
+          map.classList.add('dragging');
+        }
+        if (!drag.moved) return;
+        view.ox = drag.ox + dx;
+        view.oy = drag.oy + dy;
+        draw();
+      });
+
+      function endDrag(e) {
+        if (!drag || e.pointerId !== drag.id) return;
+        const wasDrag = drag.moved;
+        drag = null;
+        map.classList.remove('dragging');
+        if (!wasDrag) pickTile(e); // 没拖动 → 当成点击
+      }
+      map.addEventListener('pointerup', endDrag);
+      map.addEventListener('pointercancel', endDrag);
+
+      /** 找出鼠标最近的那一格。左键改方向和右键播放都用它 */
+      function nearestTile(e) {
+        const r = map.getBoundingClientRect();
+        const mx = e.clientX - r.left;
+        const my = e.clientY - r.top;
+        // 命中半径跟着缩放走，但夹在一个好点的区间里，免得缩太小点不中
+        const hit = Math.max(10, Math.min(26, view.s * 0.6));
+        let best = -1;
+        let bestD = hit;
+        for (let i = 1; i < chart.positions.length; i++) {
+          const s = toScreen(chart.positions[i]);
+          const d = Math.hypot(s.x - mx, s.y - my);
+          if (d < bestD) { bestD = d; best = i; }
+        }
+        return best;
+      }
+
+      /** 左键点击：把这一格的转角循环切换 直行 → 左转 → 右转 → 直行 */
+      function pickTile(e) {
+        const best = nearestTile(e);
+        if (best < 0) return;
+        const cur = Math.round(turns[best]);
+        turns[best] = cur === 0 ? 90 : cur === 90 ? -90 : 0;
+        dirty = true;
+        rebuild();
+      }
+
+      /**
+       * 右键点击：音乐从这一格开始播。
+       *
+       * 用的是这一格的 **startBeat** —— 也就是「玩家走到这一格」的那一刻，
+       * 而不是这一格的击打点（那是走出去的时候）。边听边改的时候，
+       * 你要听的是「走到这里时音乐是什么样」。
+       */
+      async function playFromTile(tile) {
+        try {
+          setStatus('载入音乐…');
+          await ensureAudio();
+        } catch (err) {
+          setStatus(`音乐载入失败：${err.message}`, 'err');
+          return;
+        }
+        const seg = chart.segments[Math.min(tile, chart.hitCount - 1)];
+        const sec = (raw.audioOffsetSec ?? 0) + seg.startBeat * spb();
+        audio.stop();
+        playing = false;
+        pausedSec = Math.max(0, Math.min(sec, Math.max(0, audio.durationSec - 0.05)));
+        await setPlaying(true);
+        lastTile = null; // 强制重画播放头，不然它可能停在原地不动
+        draw();
+        setStatus(`从第 ${tile} 格开始播　（拍号 ${seg.startBeat.toFixed(2)}）`, 'ok');
+      }
+
+      // ── 右键菜单：播放 + 放物件 ──────────────────────────────
+      //
+      // 右键原来只有「从这里播放」，现在把放物件也并进来 ——
+      // 两个功能都要，那就让右键弹一个小菜单。
+      //
+      // 物件约定（编码里写死，和 chart.js 对齐）：
+      //   a = manhole        井盖，放在让出来的方口里（lateral +0.5）
+      //   b = obstacle-left  左侧障碍，贴在路的左边（lateral -0.5）
+      let menuEl = null;
+      let menuTile = -1;
+
+      function closeMenu() {
+        menuEl?.remove();
+        menuEl = null;
+        menuTile = -1;
+      }
+
+      function openMenu(e, tile) {
+        closeMenu();
+        menuTile = tile;
+        const el = document.createElement('div');
+        el.style.cssText = [
+          'position:fixed',
+          `left:${e.clientX}px`,
+          `top:${e.clientY}px`,
+          'z-index:99',
+          'background:#22272f',
+          'border:1px solid #3a424f',
+          'border-radius:6px',
+          'padding:4px',
+          'box-shadow:0 6px 20px rgba(0,0,0,0.6)',
+          'font:13px/1.6 "Microsoft YaHei",sans-serif',
+          'color:#dfe4ea',
+          'min-width:180px',
+        ].join(';');
+
+        const has = (raw.props ?? []).some((p) => p.tile === tile);
+        const items = [
+          ['▶ 从这里播放', () => playFromTile(tile)],
+          ['a  放井盖', () => placeProp('manhole')],
+          ['b  放左侧障碍', () => placeProp('obstacle-left')],
+          ...(has ? [['✕ 删掉这一格的物件', () => removeProp()]] : []),
+        ];
+        for (const [label, fn] of items) {
+          const b = document.createElement('button');
+          b.textContent = label;
+          b.style.cssText =
+            'display:block;width:100%;text-align:left;background:none;border:0;color:inherit;' +
+            'font:inherit;padding:4px 10px;border-radius:4px;cursor:pointer';
+          b.onmouseenter = () => { b.style.background = '#2e3745'; };
+          b.onmouseleave = () => { b.style.background = 'none'; };
+          b.onclick = () => { fn(); closeMenu(); };
+          el.appendChild(b);
+        }
+        document.body.appendChild(el);
+        menuEl = el;
+      }
+
+      /** 在第 menuTile 格放一个物件。同一格只保留一个，替换掉旧的 */
+      function placeProp(type) {
+        if (menuTile < 0) return;
+        const t = menuTile;
+        raw.props = (raw.props ?? []).filter((p) => p.tile !== t);
+        if (type === 'manhole') {
+          // 井盖落在让出来的方口里：格子的正中间
+          raw.props.push({ type: 'manhole', tile: t, along: 0.5, lateral: 0.5, radius: 0.27 });
+        } else {
+          // 左侧障碍：偏这一格的末端（前方）。
+          //
+          // ★ 这里的 lateral 正负号在 `chart.js` 里绕了两层坐标系
+          //   （谱面 y 向下 → 世界 z → 相机偏航），我不再靠推导确定，
+          //   反过来试一次即可 —— 改这个数，右键重放一格，看它跳到哪边。
+          raw.props.push({ type: 'obstacle-left', tile: t, along: 0.9, lateral: 0.5 });
+        }
+        raw.props.sort((a, b) => a.tile - b.tile);
+        dirty = true;
+        rebuild();
+        setStatus(`第 ${t} 格放了 ${type === 'manhole' ? 'a 井盖' : 'b 左侧障碍'}`, 'ok');
+      }
+
+      function removeProp() {
+        if (menuTile < 0) return;
+        const t = menuTile;
+        raw.props = (raw.props ?? []).filter((p) => p.tile !== t);
+        dirty = true;
+        rebuild();
+        setStatus(`第 ${t} 格的物件已删除`, 'ok');
+      }
+
+      map.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const tile = nearestTile(e);
+        if (tile >= 0) openMenu(e, tile);
+      });
+      window.addEventListener('pointerdown', (e) => {
+        if (menuEl && !menuEl.contains(e.target)) closeMenu();
+      });
+      window.addEventListener('keydown', (e) => {
+        if (e.code === 'Escape') closeMenu();
+      });
+
+      // 滚轮缩放，**以鼠标位置为锚点**（不然缩放时目标会跑掉）
+      map.addEventListener(
+        'wheel',
+        (e) => {
+          e.preventDefault();
+          const r = map.getBoundingClientRect();
+          const mx = e.clientX - r.left;
+          const my = e.clientY - r.top;
+          const k = Math.exp(-e.deltaY * 0.0015); // 滚一格约 1.13 倍
+          const next = Math.max(2, Math.min(500, view.s * k));
+          const real = next / view.s;
+          // 让鼠标底下那个格坐标保持不动
+          view.ox = mx - (mx - view.ox) * real;
+          view.oy = my - (my - view.oy) * real;
+          view.s = next;
+          draw();
+        },
+        { passive: false },
+      );
+
+      $('reset').addEventListener('click', () => {
+        fitOnce();
+        draw();
+      });
+
+      // ── 播放 / 暂停 / 拖进度 ────────────────────────────────
+      /**
+       * ★ 音频路径必须补一个开头的 `/`。
+       *   CONFIG.audio.url 是 `assets/audio/xxx.mp3` 这样的相对路径，
+       *   而编辑器在 /tools/ 下面 —— 相对路径会解析成 /tools/assets/... 直接 404。
+       */
+      const audioUrl = CONFIG.audio.url.startsWith('/') ? CONFIG.audio.url : `/${CONFIG.audio.url}`;
+
+      async function ensureAudio() {
+        if (!audio.ready) {
+          await audio.init(audioUrl);
+          audio.setVolume(CONFIG.audio.volume);
+          buildPeaks();
+          $('scrub').max = String(Math.max(1, Math.round(audio.durationSec * 1000)));
+          $('tAll').textContent = mmss(audio.durationSec);
+        }
+        if (!clock) {
+          clock = new SongClock({ now: () => audio.now, bpm: raw.bpm, offsetSec: raw.audioOffsetSec ?? 0 });
+        }
+      }
+
+      function mmss(sec) {
+        const s = Math.max(0, sec);
+        return `${Math.floor(s / 60)}:${(s % 60).toFixed(3).padStart(6, '0')}`;
+      }
+
+      async function setPlaying(on) {
+        if (on) {
+          try {
+            setStatus('载入音乐…');
+            await ensureAudio();
+            setStatus('已载入音乐', 'ok');
+          } catch (err) {
+            setStatus(`音乐载入失败：${err.message}`, 'err');
+            return;
+          }
+          const from = Math.min(pausedSec, Math.max(0, audio.durationSec - 0.05));
+          const when = audio.play(0, from);
+          clock.bpm = raw.bpm;
+          clock.offsetSec = raw.audioOffsetSec ?? 0;
+          clock.startAt(when - from);
+          playing = true;
+          $('play').textContent = '⏸ 暂停';
+        } else {
+          if (clock && playing) pausedSec = clock.songTime + (raw.audioOffsetSec ?? 0);
+          audio.stop();
+          clock?.stop();
+          playing = false;
+          $('play').textContent = '▶ 播放';
+        }
+      }
+
+      $('play').addEventListener('click', () => setPlaying(!playing));
+
+      function seek(sec) {
+        pausedSec = Math.max(0, Math.min(sec, audio.durationSec || 0));
+        if (playing) {
+          const when = audio.play(0, pausedSec);
+          clock.startAt(when - pausedSec);
+        }
+        draw();
+        drawStrip();
+      }
+
+      $('scrub').addEventListener('input', (e) => {
+        const sec = Number(e.target.value) / 1000;
+        if (playing) {
+          // 拖的时候先停下来，松手再继续播
+          pausedSec = sec;
+          audio.stop();
+          clock?.stop();
+          playing = false;
+          $('play').textContent = '▶ 播放';
+          $('scrub').dataset.resume = '1';
+        } else {
+          pausedSec = sec;
+        }
+        draw();
+        drawStrip();
+      });
+      $('scrub').addEventListener('change', (e) => {
+        const resume = $('scrub').dataset.resume === '1';
+        delete $('scrub').dataset.resume;
+        seek(Number(e.target.value) / 1000);
+        if (resume) setPlaying(true);
+      });
+
+      strip.addEventListener('click', (e) => {
+        const r = strip.getBoundingClientRect();
+        seek(((e.clientX - r.left) / r.width) * (audio.durationSec || 0));
+      });
+
+      // ── 保存 ────────────────────────────────────────────────
+      async function save() {
+        setStatus('保存中…');
+        try {
+          const res = await fetch(`/api/save-chart?file=${encodeURIComponent(fileName)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(raw, null, 2),
+          });
+          const text = await res.text();
+          if (!res.ok) throw new Error(text);
+          // 服务器会把文件**重新排版**（连续相同的数字挤一行），
+          // 所以保存后要按磁盘上的实际内容重新记一遍 ——
+          // 否则下一轮轮询会以为「文件被外部改了」而白重新载入一次。
+          const back = await fetch(`${chartUrl}?t=${Date.now()}`);
+          if (back.ok) loadedText = await back.text();
+          dirty = false;
+          setStatus(`已保存（${raw.angles.length} 格）`, 'ok');
+          drawStrip();
+        } catch (err) {
+          setStatus(`保存失败：${err.message}`, 'err');
+        }
+      }
+      $('save').addEventListener('click', save);
+
+      $('reload').addEventListener('click', async () => {
+        if (dirty && !confirm('编辑器里有还没保存的改动，重新载入会丢掉它们。继续？')) return;
+        try {
+          await load({ keepView: true });
+          setStatus('已重新载入', 'ok');
+        } catch (err) {
+          setStatus(`重新载入失败：${err.message}`, 'err');
+        }
+      });
+
+      /**
+       * 自动同步：每 1.5 秒看一眼磁盘上的文件有没有变。
+       *
+       * 这样你在 VSCode 里直接改 JSON 也能生效，不用切回浏览器。
+       * 但如果编辑器里有**没保存**的改动，就只提示、不覆盖 ——
+       * 自动丢掉你刚点的东西是最让人恼火的行为。
+       */
+      async function pollExternalChange() {
+        try {
+          const res = await fetch(`${chartUrl}?t=${Date.now()}`);
+          if (!res.ok) return;
+          const text = await res.text();
+          if (text === loadedText) return;
+          if (dirty) {
+            setStatus('文件被外部修改了（你有未保存的改动，先 Ctrl+S 或点「重新载入」）', 'err');
+            return;
+          }
+          await load({ keepView: true });
+          setStatus('检测到文件变化，已自动同步', 'ok');
+        } catch {
+          // 服务器没开 / 网络抖动：安静跳过，下一轮再看
+        }
+      }
+      setInterval(pollExternalChange, 1500);
+
+      function setStatus(text, cls = '') {
+        const el = $('status');
+        el.textContent = text;
+        el.className = cls;
+      }
+
+      // ── 键盘 ────────────────────────────────────────────────
+      window.addEventListener('keydown', (e) => {
+        if (e.code === 'Space') { e.preventDefault(); setPlaying(!playing); }
+        else if (e.code === 'KeyS' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
+      });
+
+      // ── 每帧刷新 ────────────────────────────────────────────
+      let lastTile = null;
+      function tick() {
+        requestAnimationFrame(tick);
+        const beat = currentBeat();
+        const tile = currentTile();
+        $('tNow').textContent = mmss(currentSec());
+        $('tBeat').textContent = beat.toFixed(2);
+        $('tTile').textContent = tile;
+        $('tCount').textContent = chart ? chart.hitCount : '—';
+        if (!playing) $('scrub').value = String(Math.round(currentSec() * 1000));
+        if (tile !== lastTile) { lastTile = tile; draw(); }
+        drawStrip();
+      }
+
+      window.addEventListener('resize', () => { draw(); drawStrip(); });
+
+      load().then(() => {
+        tick();
+        setStatus('点「播放」载入音乐');
+      }).catch((err) => setStatus(`载入失败：${err.message}`, 'err'));
+    </script>
+  </body>
+</html>

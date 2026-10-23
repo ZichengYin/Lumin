@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>余光 · 动画试验</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { height: 100%; background: #06070a; overflow: hidden; }
+      #wrap { position: relative; width: 100%; height: 100%; display: grid; place-items: center; }
+      canvas { max-width: 100%; max-height: 100%; display: block; box-shadow: 0 0 60px rgba(0,0,0,0.9); }
+      #hint { position: absolute; left: 12px; bottom: 10px; color: #4a5260;
+        font: 12px/1.7 "Microsoft YaHei", sans-serif; pointer-events: none; }
+      #hint b { color: #7d8899; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <div id="wrap">
+      <canvas id="c"></canvas>
+      <div id="hint">
+        <b>?pause=1</b> 定格 · <b>?t=秒</b> 跳到某个时刻 · <b>?breath=</b> <b>?particles=</b> 调参数
+      </div>
+    </div>
+
+    <script type="module">
+      /**
+       * main1 的两个动画。
+       *
+       * 底图是一张**扁平**的 CG（2304×1385），没有分层，所以两个效果都得伪造：
+       *
+       * ① 人物呼吸：不能整体缩放（背景会跟着动）。做法是把他那块区域用
+       *    **羽化遮罩**抠出来，单独做极轻微的纵向缩放（1.000 → 1.012），
+       *    再叠回原图。羽化是必须的 —— 硬边会留下一条看得见的接缝。
+       *
+       * ② 镜中黑影的粒子：从黑影区域里挑出**足够暗**的像素当发射源，
+       *    粒子从那儿向外飘散、渐隐、循环。背景本身是噪点画风，
+       *    所以阈值要比背景噪点明显更低，否则整片墙都会喷粒子。
+       *
+       * 下面两个 REGION 是按眼睛定位的，改这两个数就能挪位置。
+       */
+      const REGION = {
+        /** 镜子里的黑影 */
+        figure: { x: 0.105, y: 0.255, w: 0.195, h: 0.49 },
+        /** 右侧人物（呼吸作用的范围） */
+        body: { x: 0.285, y: 0.13, w: 0.365, h: 0.84 },
+      };
+
+      const q = new URLSearchParams(location.search);
+      const num = (k, d) => (q.has(k) ? Number(q.get(k)) : d);
+
+      const CANVAS_W = 1280;
+      const IMG_ASPECT = 2304 / 1385;
+
+      const cfg = {
+        /** 呼吸一个来回几秒 */
+        breathPeriod: num('breath', 4.6),
+        /** 纵向缩放幅度（0.012 = 1.2%） */
+        breathAmount: num('breathAmp', 0.012),
+        /** 粒子数 */
+        particleCount: num('particles', 110),
+        /** 粒子寿命范围（秒） */
+        lifeMin: 1.1,
+        lifeMax: 2.6,
+        /** 飘散速度，单位是画面高度的比例/秒 */
+        speedMin: 0.02,
+        speedMax: 0.075,
+        /** 暗像素阈值：低于它的才算黑影内部 */
+        darkThreshold: 48,
+      };
+
+      const canvas = document.getElementById('c');
+      const ctx = canvas.getContext('2d');
+      const W = CANVAS_W;
+      const H = Math.round(W / IMG_ASPECT);
+      canvas.width = W;
+      canvas.height = H;
+      ctx.imageSmoothingQuality = 'high';
+
+      // 离屏画布：呼吸的那一层
+      const bodyCanvas = document.createElement('canvas');
+      const bodyCtx = bodyCanvas.getContext('2d');
+      bodyCanvas.width = W;
+      bodyCanvas.height = H;
+      // 羽化遮罩
+      const maskCanvas = document.createElement('canvas');
+      const maskCtx = maskCanvas.getContext('2d');
+      maskCanvas.width = W;
+      maskCanvas.height = H;
+
+      /** @type {HTMLImageElement} */
+      let img = null;
+      /** 粒子发射源（归一化坐标 + 亮度权重） */
+      let emitters = [];
+      let particles = [];
+      let t0 = 0;
+      let frozenAt = q.has('pause') ? num('t', 0) : null;
+
+      const rand = (a, b) => a + Math.random() * (b - a);
+
+      function loadImage(url) {
+        return new Promise((res, rej) => {
+          const im = new Image();
+          im.onload = () => res(im);
+          im.onerror = () => rej(new Error(`加载失败：${url}`));
+          im.src = url;
+        });
+      }
+
+      /**
+       * 从黑影区域里采样暗像素当发射源。
+       *
+       * 采样用一张**缩小过**的图就够了 —— 发射源只要位置，
+       * 不需要原图 2304 的分辨率，这样 getImageData 也不用读几百万像素。
+       */
+      function sampleEmitters(image) {
+        const S = 288;
+        const sc = document.createElement('canvas');
+        sc.width = S;
+        sc.height = Math.round(S / IMG_ASPECT);
+        const sx = sc.getContext('2d', { willReadFrequently: true });
+        sx.drawImage(image, 0, 0, sc.width, sc.height);
+        const data = sx.getImageData(0, 0, sc.width, sc.height).data;
+
+        const r = REGION.figure;
+        const x0 = Math.round(r.x * sc.width);
+        const x1 = Math.round((r.x + r.w) * sc.width);
+        const y0 = Math.round(r.y * sc.height);
+        const y1 = Math.round((r.y + r.h) * sc.height);
+
+        const out = [];
+        for (let y = y0; y < y1; y++) {
+          for (let x = x0; x < x1; x++) {
+            const i = (y * sc.width + x) * 4;
+            const lum = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+            if (lum < cfg.darkThreshold) {
+              out.push({ x: x / sc.width, y: y / sc.height });
+            }
+          }
+        }
+        return out;
+      }
+
+      function spawn(now, initial = false) {
+        const e = emitters[(Math.random() * emitters.length) | 0];
+        if (!e) return null;
+        const life = rand(cfg.lifeMin, cfg.lifeMax);
+        const speed = rand(cfg.speedMin, cfg.speedMax);
+        // 从黑影往外飘：左边往左，右边往右，整体带一点上升
+        const dir = Math.random() < 0.5 ? -1 : 1;
+        return {
+          x: e.x,
+          y: e.y,
+          vx: dir * speed * rand(0.25, 1),
+          vy: -speed * rand(0.1, 0.7),
+          life,
+          age: initial ? rand(0, life) : 0,
+          size: rand(0.6, 1.9),
+        };
+      }
+
+      function initParticles(now) {
+        particles = [];
+        for (let i = 0; i < cfg.particleCount; i++) {
+          const p = spawn(now, true);
+          if (p) particles.push(p);
+        }
+      }
+
+      // ── 呼吸：把人物区域羽化抠出来，单独做纵向缩放 ──────────
+      function drawBreathing(image, time) {
+        const b = REGION.body;
+        const period = Math.max(0.2, cfg.breathPeriod);
+        // 一个来回：吸气上升、呼气下落。用 sin 就够，人本来也不是匀速的
+        const phase = Math.sin((time / period) * Math.PI * 2);
+        const scale = 1 + cfg.breathAmount * phase;
+        if (Math.abs(scale - 1) < 1e-6) return;
+
+        // ① 羽化遮罩：白色矩形 + 高斯模糊，边缘就软了
+        maskCtx.clearRect(0, 0, W, H);
+        maskCtx.filter = `blur(${Math.round(W * 0.022)}px)`;
+        maskCtx.fillStyle = '#fff';
+        maskCtx.fillRect(b.x * W, b.y * H, b.w * W, b.h * H);
+        maskCtx.filter = 'none';
+
+        // ② 把整张图按呼吸幅度缩放画一遍 —— 底部对齐，像脚踩在地上
+        bodyCtx.clearRect(0, 0, W, H);
+        const anchorY = (b.y + b.h) * H;
+        bodyCtx.save();
+        bodyCtx.translate(W / 2, anchorY);
+        bodyCtx.scale(1, scale);
+        bodyCtx.translate(-W / 2, -anchorY);
+        bodyCtx.drawImage(image, 0, 0, W, H);
+        bodyCtx.restore();
+
+        // ③ 用遮罩裁掉范围外的东西，再叠回主画布
+        bodyCtx.globalCompositeOperation = 'destination-in';
+        bodyCtx.drawImage(maskCanvas, 0, 0);
+        bodyCtx.globalCompositeOperation = 'source-over';
+
+        ctx.drawImage(bodyCanvas, 0, 0);
+      }
+
+      function drawParticles(dt, time) {
+        ctx.save();
+        for (const p of particles) {
+          p.age += dt;
+          if (p.age > p.life) {
+            Object.assign(p, spawn(time, false) ?? p);
+            continue;
+          }
+          p.x += p.vx * dt;
+          p.y += p.vy * dt;
+
+          // 出生淡入、临终淡出 —— 两头都不留硬边
+          const k = p.age / p.life;
+          const alpha = (k < 0.15 ? k / 0.15 : 1) * (1 - k) * 0.85;
+
+          // 黑影是黑的，所以粒子也用暗色。画在深色背景上看不出来，
+          // 但这里的底图是浅灰，暗点能读出来
+          ctx.globalAlpha = alpha;
+          ctx.fillStyle = '#0a0a0c';
+          ctx.beginPath();
+          ctx.arc(p.x * W, p.y * H, p.size, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+
+      let last = 0;
+      function frame(ms) {
+        const time = frozenAt ?? (ms - t0) / 1000;
+        const dt = frozenAt !== null ? 0 : Math.min(0.05, (ms - last) / 1000);
+        last = ms;
+
+        ctx.clearRect(0, 0, W, H);
+        ctx.drawImage(img, 0, 0, W, H);
+        if (frozenAt === null) drawBreathing(img, time);
+        // 定格时也要画一次粒子，否则静态截图里什么都看不到
+        drawParticles(frozenAt === null ? dt : 0.0001, time);
+
+        if (frozenAt === null) requestAnimationFrame(frame);
+      }
+
+      (async () => {
+        try {
+          // 目录名是中文，用 encodeURIComponent 拼，别手写
+          const dir = await fetch('/assets/images/').then(() => null).catch(() => null);
+          void dir;
+          img = await loadImage('/' + encodeURI('assets/images/动画/main1.png'));
+          emitters = sampleEmitters(img);
+          if (!emitters.length) throw new Error('黑影区域没采到暗像素，调 REGION.figure 或 darkThreshold');
+          initParticles(0);
+          t0 = performance.now();
+          requestAnimationFrame(frame);
+          console.log(`[动画] 发射源 ${emitters.length} 个，画布 ${W}×${H}`);
+        } catch (err) {
+          document.getElementById('hint').textContent = `出错：${err.message}`;
+          console.error(err);
+        }
+      })();
+    </script>
+  </body>
+</html>

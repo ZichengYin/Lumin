@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>余光 · 最小可运行 demo</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+      }
+
+      /* 全黑画面：唯一的亮色来自 canvas 里的行星 */
+      #stage {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        outline: none;
+        touch-action: none;
+        cursor: crosshair;
+      }
+
+      /* JS 没跑起来时的兜底提示，免得看到纯黑以为坏了 */
+      #fallback {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: rgba(255, 255, 255, 0.4);
+        font: 14px/1.9 "Microsoft YaHei", "PingFang SC", sans-serif;
+        text-align: center;
+        pointer-events: none;
+      }
+
+      body.ready #fallback {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="stage" tabindex="0"></canvas>
+
+    <div id="fallback">
+      正在加载…<br />
+      如果一直停在这里：请用 <b>启动游戏.bat</b> 打开，<br />
+      不要直接双击 index.html（ES 模块在 file:// 下会被浏览器拦掉）。
+    </div>
+
+    <!-- 兜底提示由 main.js 加载成功后自己关掉；加载失败就一直显示 -->
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

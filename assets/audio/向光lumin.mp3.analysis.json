@@ -1,0 +1,101 @@
+{
+  "source": "assets/audio/向光lumin.mp3",
+  "bytes": 3263328,
+  "sha256": "d5e5243861d94fbdae9659f908debd8d216bbe37ef2614b5f327385e4f5f864c",
+  "format": "mp3",
+  "encoding": "mpeg-layer3",
+  "sampleRate": 44100,
+  "channels": 2,
+  "vbr": false,
+  "durationSec": 135.9412,
+  "analyzedAt": "2026-10-15T12:52:53.110Z",
+  "bpm": 79.97,
+  "bpmCandidates": [
+    {
+      "bpm": 79.79,
+      "score": 0.2804
+    },
+    {
+      "bpm": 159.57,
+      "score": 0.2249
+    },
+    {
+      "bpm": 119.05,
+      "score": 0.2106
+    },
+    {
+      "bpm": 96.15,
+      "score": 0.2
+    },
+    {
+      "bpm": 120.97,
+      "score": 0.1971
+    },
+    {
+      "bpm": 80.65,
+      "score": 0.1249
+    }
+  ],
+  "alternation": [
+    {
+      "bpm": 60,
+      "ratio": 2.294
+    },
+    {
+      "bpm": 75,
+      "ratio": 2.475
+    },
+    {
+      "bpm": 80,
+      "ratio": 5.299
+    },
+    {
+      "bpm": 90,
+      "ratio": 1.187
+    },
+    {
+      "bpm": 100,
+      "ratio": -8.938
+    },
+    {
+      "bpm": 110,
+      "ratio": 3.235
+    },
+    {
+      "bpm": 120,
+      "ratio": 1.829
+    },
+    {
+      "bpm": 130,
+      "ratio": 2.052
+    },
+    {
+      "bpm": 140,
+      "ratio": 6.071
+    },
+    {
+      "bpm": 150,
+      "ratio": 1.197
+    },
+    {
+      "bpm": 160,
+      "ratio": -4.237
+    },
+    {
+      "bpm": 180,
+      "ratio": 3.086
+    },
+    {
+      "bpm": 200,
+      "ratio": 3.592
+    },
+    {
+      "bpm": 240,
+      "ratio": 8.105
+    }
+  ],
+  "strongestAlternationBpm": 240,
+  "chartBpm": 120,
+  "chartBpmAlternation": 1.829,
+  "offsetSec": 0.1042
+}

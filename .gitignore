@@ -1,0 +1,44 @@
+# 依赖
+node_modules/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 日志与临时产物
+*.log
+dist/
+build/
+.tmp/
+
+# ── 参考源码 ────────────────────────────────────────────
+# 参考源码已移出项目，统一放在 D:\desk\_参考源码\ ：
+#   Circle-master\  —— C# / osu!framework 写的完整 ADOFAI 复刻（不是播放器），
+#                      有 .adofai 格式解析、行星物理、玩家延迟校准时钟，后面要用。
+#
+# ADOFAN_PIXI 已于 2026-10-05 删除：它是谱面播放器而非游戏，判定核心在 npm 包
+# adofai 里（那个包不在解压目录中），留下的 PIXI 渲染代码对本作无用；
+# 它的音频是扒 ADOFAI 的，不能商用。原始 zip 仍在 D:\desk\ADOFAN_PIXI-main.zip。
+_ref/
+
+# ── 大体积素材 ──────────────────────────────────────────
+# 原来这里写的是 `动画/`，会连 main.mp4 / restart.mp4 一起排除掉 ——
+# 那两段是**主界面和开场动画**，排掉之后 Pages 上打开就是一片黑。
+# 现在只排除用不到的东西。
+#
+# 母版 WAV（向光lumin.wav，34 MB）游戏不用，只用转码后的 mp3。
+assets/audio/*.wav
+
+# REAPER 的波形缓存，随时能重新生成
+*.reapeaks
+
+# ── 生成产物 ────────────────────────────────────────────
+# assets/audio/placeholder-120bpm.wav（2.7MB）是
+#   node tools/make-placeholder-music.mjs
+# 生成出来的。这里**故意不忽略**它：新人 clone 下来直接就能跑，
+# npm test 里也有测试要读它。想改 BPM 就重新生成并同步改 config.js。
+# 如果哪天觉得仓库太大，把下面这行取消注释即可（届时测试会自动跳过）。
+# assets/audio/*.wav
