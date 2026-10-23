@@ -37,8 +37,8 @@ const VH = 1384;
  *   `https://<用户名>.github.io/<仓库名>/` —— 绝对路径会解析到根域名，
  *   直接 404，主界面一片黑。
  */
-const MAIN_SRC = `../${encodeURI('assets/images/动画/main.mp4')}`;
-const INTRO_SRC = `../${encodeURI('assets/images/动画/restart.mp4')}`;
+const MAIN_SRC = encodeURI('assets/images/动画/main.mp4');
+const INTRO_SRC = encodeURI('assets/images/动画/restart.mp4');
 
 /**
  * 三个菜单项在画面里的位置（归一化到视频尺寸）。
