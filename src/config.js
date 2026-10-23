@@ -70,7 +70,7 @@ export const CONFIG = {
     /** 盲人的世界半径 */
     charRadius: 0.5,
     /** 素材高度对应的世界尺寸（俯视剪影的"长"） */
-    charSpriteSize: 1.3,
+    charSpriteSize: 2.6,
     /**
      * 是否把角色素材反转亮度。
      * 素材是「黑剪影 + 白描边」，在纯黑背景上黑色等于不存在、只剩一堆看不清的线。
@@ -79,7 +79,7 @@ export const CONFIG = {
      */
     charInvert: true,
     /** 一个展望多远（世界单位），用来决定画多少段 */
-    viewDistance: 150,
+    viewDistance: 30,
     /** 转向箭头的箭杆长度（世界单位） */
     arrowSize: 2.5,
     /**
@@ -100,13 +100,13 @@ export const CONFIG = {
   // 地平线调高（数值变小）→ 视角更陡、圈更圆；调低 → 视角更平、路拉得更长。
   camera: {
     /** 地平线在屏幕高度上的比例 */
-    horizonRatio: 0.33,
+    horizonRatio: 0.05,
     /** 盲人脚下那个点落在屏幕的高度比例 */
-    charScreenY: 0.66,
+    charScreenY: 0.60,
     /** 盲人（世界半径 1）的屏幕半径 ÷ 视口高。0.028 在 1080p 下约 30px */
-    charRadiusRatio: 0.028,
+    charRadiusRatio: 0.1,
     /** 盲人离镜头多远（世界单位）。越大透视越弱、路越"平" */
-    charDistance: 13,
+    charDistance: 12,
     /** 每秒向目标收敛多少（跟随时用）。越大跟得越紧 */
     smooth: 12,
     /** 转向时每秒转过多少弧度 */

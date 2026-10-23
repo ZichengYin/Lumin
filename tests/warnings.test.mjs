@@ -100,7 +100,7 @@ test('动作拍：转向看这一格的起点，井盖早一格', () => {
   const manhole = buildChart({
     ...BASE,
     angles: [0, 0, 0, -90, 0, 90, 0],
-    props: [{ type: 'manhole', tile: 4, radius: 0.27 }],
+    props: [{ type: 'turn', tile: 4, radius: 0.27 }],
   });
   const got = actionBeat(manhole, manhole.props[0]);
   assert.equal(got, manhole.segments[3].startBeat, '井盖的动作拍取的是前一格');
@@ -113,7 +113,7 @@ test('播报清单：按拍号排序，提前量正确', () => {
     ...BASE,
     angles: [0, 0, 0, 0, 90, 90, 90, 90, 90, 0, 0, 0],
     props: [
-      { type: 'manhole', tile: 4, radius: 0.27 },
+      { type: 'turn', tile: 4, radius: 0.27 },
       { type: 'turn', tile: 9, dir: -1 },
     ],
   });
@@ -159,7 +159,7 @@ test('井盖落位：紧贴路面的井盖报出负余量', () => {
   const chart = buildChart({
     ...BASE,
     angles: [0, 0, 0, 0, 0, 0],
-    props: [{ type: 'manhole', tile: 2, along: 0.5, lateral: 0, radius: 0.27 }],
+    props: [{ type: 'turn', tile: 2, along: 0.5, lateral: 0, radius: 0.27 }],
   });
   const r = manholeClearance(chart, { tileSpacing: 6, pathWidth: 1.5 });
   assert.equal(r.length, 1);
@@ -170,7 +170,7 @@ test('井盖落位：正常绕行的井盖余量为正', () => {
   const chart = buildChart({
     ...BASE,
     angles: [0, 0, 0, -90, 0, 90, 0],
-    props: [{ type: 'manhole', tile: 4, along: 0.5, lateral: 0.5, radius: 0.27 }],
+    props: [{ type: 'turn', tile: 4, along: 0.5, lateral: 0.5, radius: 0.27 }],
   });
   const r = manholeClearance(chart, { tileSpacing: 6, pathWidth: 1.5 });
   assert.ok(r[0].clearance > 0, `应当有余量，实际 ${r[0].clearance}`);

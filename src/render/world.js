@@ -198,7 +198,7 @@ function drawTexturedTriangle(ctx, img, p, uv) {
   ctx.restore();
 }
 
-export function texturedPath(ctx, camera, cam, track, { width, from = 0, to = Infinity, imgA, imgB, fade = 0, alpha = 1 }) {
+export function texturedPath(ctx, camera, cam, track, { width, from = 0, to = Infinity, imgA, imgB, fade = 0, alpha = 1, centerIndex = null, fadeStartTiles = 3, fadeEndTiles = 10 }) {
   const half = width / 2;
   const lo = Math.max(0, from);
   const last = Math.min(to, track.points.length - 2);
@@ -240,9 +240,20 @@ export function texturedPath(ctx, camera, cam, track, { width, from = 0, to = In
     const SEG = 3;
     const lerp = (p, q, t) => ({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t });
 
+    // 远处渐隐：离角色超过 fadeStartTiles 格开始变暗，到 fadeEndTiles 格完全消失。
+    // 不用「画到某格就截断」，那样会在边界留下一条硬切。
+    let distAlpha = 1;
+    if (centerIndex !== null) {
+      const d = i - centerIndex;
+      const beyond = Math.abs(d) - fadeStartTiles;
+      const span = Math.max(1, fadeEndTiles - fadeStartTiles);
+      if (beyond > 0) distAlpha = Math.max(0, 1 - beyond / span);
+      if (distAlpha <= 0.002) continue;
+    }
+
     for (const [img, al] of [
-      [imgA, a1],
-      [imgB, a2],
+      [imgA, a1 * distAlpha],
+      [imgB, a2 * distAlpha],
     ]) {
       if (!img?.complete || !img.naturalWidth || al <= 0.002) continue;
       ctx.save();

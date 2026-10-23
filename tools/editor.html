@@ -515,7 +515,7 @@
           // ★ 这里的 lateral 正负号在 `chart.js` 里绕了两层坐标系
           //   （谱面 y 向下 → 世界 z → 相机偏航），我不再靠推导确定，
           //   反过来试一次即可 —— 改这个数，右键重放一格，看它跳到哪边。
-          raw.props.push({ type: 'obstacle-left', tile: t, along: 0.9, lateral: 0.5 });
+          raw.props.push({ type: 'obstacle-left', tile: t, along: 0.9, lateral: -0.8 });
         }
         raw.props.sort((a, b) => a.tile - b.tile);
         dirty = true;

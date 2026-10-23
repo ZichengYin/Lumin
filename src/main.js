@@ -62,6 +62,8 @@ const autostart = query.has('autostart');
 const debugPaused = query.has('paused');
 /** ?revealR=2.5 把涟漪半径钉死成这个值（世界单位）—— 调尺寸时用来量屏幕上实际多大 */
 const debugRevealR = query.has('revealR') ? Number(query.get('revealR')) : null;
+/** ?axes=1 画出 along / lateral 的屏幕方向（摆物件时对方向用） */
+const debugAxes = query.has('axes');
 
 // ── DOM ────────────────────────────────────────────────────
 const canvasEl = document.getElementById('stage');
@@ -848,6 +850,10 @@ function render(songTime, beat) {
       imgB: blockB,
       fade: state.fade ?? 0,
       alpha: 1,
+      // 远处渐隐：角色身边 3 格内全亮，到 10 格完全消失
+      centerIndex: c.ps.index,
+      fadeStartTiles: 3,
+      fadeEndTiles: 10,
     });
   }
   world.blindPathGrid(ctx, camera, cam, track, { ...range, cell: CONFIG.world.pathCell, ambient, reveal });
@@ -886,8 +892,19 @@ function render(songTime, beat) {
       ctx.closePath();
       ctx.clip();
 
-      // 裁好之后整条路按正常亮度画，露出来的自然只有这一圈
-      const rippleRange = { ...range, ambient: reveal.alpha, reveal: null };
+      // 裁好之后，只画**身边前后几格**。
+      //
+      // ★ 光有圆形裁剪不够：谱面转圈的时候，第二圈在**世界坐标上**可能
+      //   就落在角色旁边，虽然沿路还隔着几十格 —— 圆形裁剪照样会把它露出来，
+      //   玩家一眼就看见了自己"还没走到的路"。
+      //   所以再加一道**格子序号**的限制：只看得到 index-2 … index+3。
+      const rippleRange = {
+        ...range,
+        from: Math.max(0, c.ps.index - 2),
+        to: c.ps.index + 3,
+        ambient: reveal.alpha,
+        reveal: null,
+      };
       world.blindPath(ctx, camera, cam, track, rippleRange);
       world.blindPathGrid(ctx, camera, cam, track, { ...rippleRange, cell: CONFIG.world.pathCell });
       world.hitMarks(ctx, camera, cam, track, rippleRange);
@@ -903,7 +920,7 @@ function render(songTime, beat) {
   // 后者只会让人失去方位感，不是这个游戏想制造的体验。
   world.cane(ctx, camera, cam, c.pos, c.ps.planetAngle, R);
   if (characterReady) {
-    world.character(ctx, camera, cam, c.pos, c.yaw, characterImage, CONFIG.world.charSpriteSize, {
+    world.character(ctx, camera, cam, c.pos, c.yaw + Math.PI, characterImage, CONFIG.world.charSpriteSize, {
       invert: CONFIG.world.charInvert,
     });
   }
@@ -917,9 +934,25 @@ function render(songTime, beat) {
   // 状态：井盖用 well1/well2 交叉淡入；**左侧障碍暂时借用角色贴图**当占位，
   //       等素材画好再换（改 CONFIG.assets 里加一条即可）。
   for (const prop of track.props) {
-    // 已经走过去的不再画 —— 路面本来就只画眼前那一段，
-    // 物件要是留在原地就会"浮"在身后，和路的消失方式对不上。
-    if (Number.isInteger(prop.tile) && prop.tile < state.nextHit) continue;
+    // ★ 可见窗口：**经过它之前 2 秒 ~ 之后 2 秒**，一共 4 秒。
+    //
+    //   之前是「走过去就消失」，看起来像还没到就没了；而且远处就开始画，
+    //   叉叉缩小成几个像素会跟着相机抖，像一颗闪的星点。
+    //   改成固定时间窗之后两个问题一起没了：远处不画，走近了才出现。
+    if (Number.isInteger(prop.tile)) {
+      const seg = chart.segments[Math.min(prop.tile, chart.hitCount - 1)];
+      const atSec = seg ? seg.hitBeat * (60 / chart.bpm) : 0;
+      // 提前 0.8 秒出现（2 秒太早，物件会在还很远的时候就冒出来），
+      // 走过去之后留 2 秒再消失。
+      // 调试模式（?beat=）不受这个窗口限制 —— 否则摆物件时永远看不到它。
+      if (debugBeat === null && (songTime < atSec - 0.8 || songTime > atSec + 2)) continue;
+    }
+
+    // ② 失明之后只看得到涟漪那一圈里的东西 —— 障碍也不能例外。
+    //    否则"看不见路却看得见障碍"，等于用障碍反推出了自己在哪。
+    if (reveal && Number.isInteger(prop.tile)) {
+      if (prop.tile < c.ps.index - 2 || prop.tile > c.ps.index + 3) continue;
+    }
 
     const alpha = world.hintAlpha(camera, cam, prop, state.fade);
     if (alpha <= 0) continue;
@@ -932,31 +965,140 @@ function render(songTime, beat) {
         fade: state.fade ?? 0,
       });
     } else if (prop.type === 'obstacle-left') {
-      // 占位：先借用井盖贴图。
+      // 红色叉叉，**画在地面平面里**。
       //
-      // ★ 不能用 character() 画 —— 那是**站立立绘**（billboard），
-      //   地面上的东西用它画出来就是一根竖条。well 是地面平面图，
-      //   直接铺在地面圆上，和井盖走同一条路径。
-      //
-      //   旧数据里没有 radius，退回默认（0.27 格）。
-      const r = prop.radius ?? CONFIG.world.tileSpacing * 0.27;
-      world.manhole(ctx, camera, cam, prop, r, {
-        alpha,
-        imgA: wellA,
-        imgB: wellB,
-        fade: state.fade ?? 0,
-      });
-    } else if (prop.type === 'turn') {
-      // 转向箭头：导航层取消后不再使用，但谱面里可能还留着旧数据
-      const i = prop.tile ?? 0;
-      const prevDeg = track.angles[Math.max(0, i - 1)];
-      const nextDeg = track.angles[Math.min(i, track.angles.length - 1)];
-      let turnDeg = nextDeg - prevDeg;
-      while (turnDeg > 180) turnDeg -= 360;
-      while (turnDeg <= -180) turnDeg += 360;
-      world.turnArrow(ctx, camera, cam, prop, toRad(prevDeg), toRad(turnDeg), CONFIG.world.arrowSize, {
-        alpha,
-      });
+      // ★ 原来是用屏幕像素画一个横竖等长的十字 —— 那永远不会被透视压扁，
+      //   看起来像浮在屏幕上的一张纸，不像地上的标记。
+      //   现在两条臂是**世界空间里的两条对角线段**，投影之后自然被压成
+      //   扁的、斜的，和路面躺在一起。
+      const ARM = CONFIG.world.tileSpacing * 0.16; // 半臂长（世界单位）
+      const pA1 = camera.project({ x: prop.x - ARM, z: prop.z - ARM }, cam);
+      const pA2 = camera.project({ x: prop.x + ARM, z: prop.z + ARM }, cam);
+      const pB1 = camera.project({ x: prop.x + ARM, z: prop.z - ARM }, cam);
+      const pB2 = camera.project({ x: prop.x - ARM, z: prop.z + ARM }, cam);
+      if (!pA1 || !pA2 || !pB1 || !pB2) continue;
+
+      // 线宽也跟着远近缩（用两条臂在屏幕上的长度估一下）
+      const len = Math.hypot(pA2.x - pA1.x, pA2.y - pA1.y);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = 'rgba(255, 64, 64, 0.95)';
+      ctx.lineWidth = Math.max(1, Math.min(10, len * 0.12));
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(pA1.x, pA1.y);
+      ctx.lineTo(pA2.x, pA2.y);
+      ctx.moveTo(pB1.x, pB1.y);
+      ctx.lineTo(pB2.x, pB2.y);
+      ctx.stroke();
+      ctx.restore();
+
+  }
+  }
+
+  // ── 调试：along / lateral 到底指向屏幕哪边 ─────────────
+  //
+  // `?axes=1` 会在当前格子上画两个箭头：
+  //   绿 = along +  （谱面里「往前」的方向）
+  //   蓝 = lateral +（谱面里「右手边」，见 chart.js 的 rx/ry）
+  //
+  // 这两个方向穿过三层坐标系（谱面 y 向下 → 世界 z 深度 → 相机偏航），
+  // 靠推导已经错了三次。画出来看一眼，一次就能定死。
+  if (debugAxes && state.chart && state.track) {
+    // render() 里没有局部 chart —— 它在 frame() 里。用 state.chart。
+    const chart = state.chart;
+    const t = Math.min(Math.max(0, state.nextHit), chart.hitCount - 1);
+    const p0 = track.points[t];
+    const p1 = track.points[t + 1];
+    if (p0 && p1) {
+      const mid = { x: (p0.x + p1.x) / 2, z: (p0.z + p1.z) / 2 };
+      const L = CONFIG.world.tileSpacing * 1.6;
+      let fx = p1.x - p0.x;
+      let fz = p1.z - p0.z;
+      const fl = Math.hypot(fx, fz) || 1;
+      fx /= fl;
+      fz /= fl;
+      // 谱面里 lateral 的法线是 (-sin a, cos a)，等价于把前进方向转 +90°
+      const lx = -fz;
+      const lz = fx;
+
+      const O = camera.project(mid, cam);
+      const F = camera.project({ x: mid.x + fx * L, z: mid.z + fz * L }, cam);
+      const S = camera.project({ x: mid.x + lx * L, z: mid.z + lz * L }, cam);
+
+      const arrow = (from, to, color, label) => {
+        if (!from || !to) return;
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(from.x, from.y);
+        ctx.lineTo(to.x, to.y);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(to.x, to.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.font = 'bold 16px "Microsoft YaHei", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, to.x, to.y - 14);
+        ctx.restore();
+      };
+
+      if (O) {
+        ctx.save();
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(O.x, O.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.font = '13px "Microsoft YaHei", sans-serif';
+        ctx.fillStyle = 'rgba(255,255,255,0.75)';
+        ctx.textAlign = 'left';
+        ctx.fillText(`tile ${t}`, O.x + 8, O.y + 16);
+        ctx.restore();
+      }
+      arrow(O, F, '#5fdc7a', 'along +');
+      arrow(O, S, '#5aa9ff', 'lateral +');
+
+      // ── 坐标网格：直接指位置，不用猜 ─────────────────────
+      // 在 along × lateral 上撒一片带标注的小叉叉。
+      // 你觉得哪个位置对，把它的数字告诉我，我写进数据就行。
+      //   along   = 0.2 靠格子起点 / 0.7 中间 / 1.2 已越过末端
+      //   lateral = 负 → 屏幕右，正 → 屏幕左（?axes=1 量出来的）
+      const ALONG = [0.2, 0.7, 1.2];
+      const LAT = [-1.2, -0.6, 0, 0.6, 1.2];
+      const dirA = toRad(chart.angles[Math.min(t, chart.angles.length - 1)]);
+      const ax = Math.cos(dirA);
+      const az = Math.sin(dirA);
+      const SPAN = CONFIG.world.tileSpacing;
+
+      ctx.save();
+      ctx.font = '11px "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (const al of ALONG) {
+        for (const la of LAT) {
+          const wp = {
+            x: chart.positions[t].x * SPAN + (ax * al - az * la) * SPAN,
+            z: chart.positions[t].y * SPAN + (az * al + ax * la) * SPAN,
+          };
+          const p2 = camera.project(wp, cam);
+          if (!p2) continue;
+          const r = 5;
+          ctx.strokeStyle = 'rgba(255,120,120,0.8)';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(p2.x - r, p2.y - r);
+          ctx.lineTo(p2.x + r, p2.y + r);
+          ctx.moveTo(p2.x + r, p2.y - r);
+          ctx.lineTo(p2.x - r, p2.y + r);
+          ctx.stroke();
+          ctx.fillStyle = 'rgba(255,205,205,0.85)';
+          ctx.fillText(al + ' / ' + la, p2.x, p2.y + 15);
+        }
+      }
+      ctx.restore();
     }
   }
 
@@ -1098,7 +1240,10 @@ const introEl = document.getElementById('intro');
 // 只在**真的是个元素**时才接线。集成测试里的假 DOM 会返回一个没有
 // addEventListener / removeEventListener 的桩，直接调会抛 ——
 // 抛在模块顶层会把整个 main.js 带崩，表现是测试文件里一堆无关的失败。
-if (introEl && typeof introEl.addEventListener === 'function' && typeof introEl.removeEventListener === 'function') {
+// 调试截图时直接跳过介绍页 —— 否则 ?beat= 截到的永远是那两行字。
+if (introEl && debugBeat !== null) {
+  introEl.remove();
+} else if (introEl && typeof introEl.addEventListener === 'function' && typeof introEl.removeEventListener === 'function') {
   const dismissIntro = (e) => {
     // 测试环境里的假事件没有 stopPropagation，用可选链兜一下；
     // 真浏览器里它是有的，阻止冒泡这一步不能省。

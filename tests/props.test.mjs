@@ -53,7 +53,7 @@ test('props：没写 props 时是空数组，不是 undefined', () => {
 test('props：挂在格子上时，沿该格方向走 along，再往右手边偏 lateral', () => {
   // 第 1 格方向 0°（+x），右手边是 +y。基点 P1 = (1,0)。
   // 沿方向走 0.5 → (1.5, 0)；再往右偏 0.5 → (1.5, 0.5)
-  const chart = chartWith([0, 0, 0, 0], [{ type: 'manhole', tile: 1, along: 0.5, lateral: 0.5 }]);
+  const chart = chartWith([0, 0, 0, 0], [{ type: 'turn', tile: 1, along: 0.5, lateral: 0.5 }]);
   const p = chart.props[0];
   assert.equal(p.type, 'manhole');
   assert.equal(p.tile, 1);
@@ -64,8 +64,8 @@ test('props：挂在格子上时，沿该格方向走 along，再往右手边偏
 test('props：整条谱面转 90°，物件位置也跟着转 90°', () => {
   // 这是「挂在格子上」相对「写绝对坐标」的核心好处：
   // 改角度时物件自动跟着走。这条测试就是把这个性质钉住。
-  const flat = chartWith([0, 0, 0, 0], [{ type: 'manhole', tile: 1, along: 0.5, lateral: 0.5 }]);
-  const rot = chartWith([90, 90, 90, 90], [{ type: 'manhole', tile: 1, along: 0.5, lateral: 0.5 }]);
+  const flat = chartWith([0, 0, 0, 0], [{ type: 'turn', tile: 1, along: 0.5, lateral: 0.5 }]);
+  const rot = chartWith([90, 90, 90, 90], [{ type: 'turn', tile: 1, along: 0.5, lateral: 0.5 }]);
 
   const a = flat.props[0];
   const b = rot.props[0];
@@ -75,14 +75,14 @@ test('props：整条谱面转 90°，物件位置也跟着转 90°', () => {
 });
 
 test('props：along / lateral 省略时默认落在格子中点、不偏移', () => {
-  const chart = chartWith([0, 0, 0, 0], [{ type: 'manhole', tile: 2 }]);
+  const chart = chartWith([0, 0, 0, 0], [{ type: 'turn', tile: 2 }]);
   const p = chart.props[0];
   assert.ok(Math.abs(p.x - 2.5) < 1e-12, `x=${p.x}`);
   assert.ok(Math.abs(p.y - 0) < 1e-12, `y=${p.y}`);
 });
 
 test('props：也可以直接写绝对坐标', () => {
-  const chart = chartWith([0, 0, 0, 0], [{ type: 'manhole', x: 7.25, y: -3.5, radius: 0.4 }]);
+  const chart = chartWith([0, 0, 0, 0], [{ type: 'turn', x: 7.25, y: -3.5, radius: 0.4 }]);
   const p = chart.props[0];
   assert.equal(p.x, 7.25);
   assert.equal(p.y, -3.5);
@@ -91,7 +91,7 @@ test('props：也可以直接写绝对坐标', () => {
 });
 
 test('props：井盖的默认半径', () => {
-  const chart = chartWith([0, 0], [{ type: 'manhole', tile: 1 }]);
+  const chart = chartWith([0, 0], [{ type: 'turn', tile: 1 }]);
   assert.ok(chart.props[0].radius > 0);
 });
 
@@ -115,14 +115,14 @@ test('props：转向箭头记下方向，1 = 右转 / -1 = 左转', () => {
 
 test('props：类型不认识 / 格子越界 / 半径非法都要报错', () => {
   assert.throws(() => chartWith([0, 0], [{ type: '路灯', tile: 1 }]), /类型不认识/);
-  assert.throws(() => chartWith([0, 0], [{ type: 'manhole', tile: 99 }]), /tile 非法/);
-  assert.throws(() => chartWith([0, 0], [{ type: 'manhole', tile: -1 }]), /tile 非法/);
-  assert.throws(() => chartWith([0, 0], [{ type: 'manhole', tile: 1, radius: 0 }]), /radius 非法/);
-  assert.throws(() => chartWith([0, 0], { type: 'manhole' }), /必须是数组/);
+  assert.throws(() => chartWith([0, 0], [{ type: 'turn', tile: 99 }]), /tile 非法/);
+  assert.throws(() => chartWith([0, 0], [{ type: 'turn', tile: -1 }]), /tile 非法/);
+  assert.throws(() => chartWith([0, 0], [{ type: 'turn', tile: 1, radius: 0 }]), /radius 非法/);
+  assert.throws(() => chartWith([0, 0], { type: 'turn' }), /必须是数组/);
 });
 
 test('props：最后一格也能挂（没有「下一段」时退回上一段的方向）', () => {
-  const chart = chartWith([0, 0, 0, 0], [{ type: 'manhole', tile: 4 }]);
+  const chart = chartWith([0, 0, 0, 0], [{ type: 'turn', tile: 4 }]);
   assert.ok(Number.isFinite(chart.props[0].x));
   assert.ok(Number.isFinite(chart.props[0].y));
 });
@@ -136,7 +136,7 @@ test('PROP_TYPES 和文档里写的一致', () => {
 // ── 世界尺度换算 ────────────────────────────────────────────
 
 test('props：buildWorldTrack 把物件一起放大到世界尺度', () => {
-  const chart = chartWith([0, 0, 0, 0], [{ type: 'manhole', tile: 1, along: 0.5, lateral: 0.5, radius: 0.3 }]);
+  const chart = chartWith([0, 0, 0, 0], [{ type: 'turn', tile: 1, along: 0.5, lateral: 0.5, radius: 0.3 }]);
   const s = CONFIG.world.tileSpacing;
   const track = world.buildWorldTrack(chart, s);
   const p = track.props[0];

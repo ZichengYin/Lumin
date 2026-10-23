@@ -262,7 +262,8 @@ function normalizeProps(rawProps, positions, angles) {
       const a = toRad(dirDeg);
       const fx = Math.cos(a);
       const fy = Math.sin(a);
-      // 行进方向的右手边（屏幕坐标 y 向下，所以是这个符号）
+      // 横向偏移的基准向量。**约定**：lateral 正值 = 屏幕左，负值 = 屏幕右。
+      // （原来这里写着「右手边」，实测是反的 —— 用 ?axes=1 量出来的。）
       const rx = -Math.sin(a);
       const ry = Math.cos(a);
       x = positions[tile].x + fx * along + rx * lateral;
