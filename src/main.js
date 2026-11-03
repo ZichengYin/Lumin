@@ -67,6 +67,10 @@ const debugRevealR = query.has('revealR') ? Number(query.get('revealR')) : null;
 const debugAxes = query.has('axes');
 /** ?prologue=1 强制播序章（调试用）；?prologue=0 强制跳过 */
 const debugPrologue = query.has('prologue') ? query.get('prologue') !== '0' : null;
+/** ?vnBlack=1 单独预览黑屏打字效果（调字速、字体用） */
+const debugVnBlack = query.get('vnBlack');
+/** ?vnChoice=1 单独预览最后的选择页 */
+const debugVnChoice = query.get('vnChoice') !== null;
 
 // ── DOM ────────────────────────────────────────────────────
 const canvasEl = document.getElementById('stage');
@@ -303,12 +307,20 @@ async function loadLevel() {
  * 时间点用 state.revealAt（最近一次击打的时刻），和涟漪用的是同一个。
  */
 function characterFrame() {
-  if (!ch2Image?.complete || !ch2Image.naturalWidth) return characterImage;
+  // ★ 每一张都要检查 complete —— 只判断对象存不存在不够。
+  //   图片还没解码完时，billboard 会直接 return，整帧都不画人物。
+  //   任何时候拿不到可用帧就退回旧素材（它一定加载过）。
+  const ok = (im) => (im && im.complete && im.naturalWidth > 0 ? im : null);
+  const fallback = ok(characterImage);
+  const f1 = ok(ch1Image);
+  const f2 = ok(ch2Image);
+  if (!f1 || !f2) return fallback ?? f1 ?? f2;
+
   const since = (performance.now() - state.revealAt) / 1000;
-  const f1 = CONFIG.world.charFrame1Sec ?? 0.09;
-  const f2 = CONFIG.world.charFrame2Sec ?? 0.24;
-  if (since < 0 || since >= f2) return ch1Image?.complete && ch1Image.naturalWidth ? ch1Image : characterImage;
-  return since < f1 ? (ch1Image ?? characterImage) : ch2Image;
+  const t1 = CONFIG.world.charFrame1Sec ?? 0.18;
+  const t2 = CONFIG.world.charFrame2Sec ?? 0.5;
+  if (since < 0 || since >= t2) return f1;
+  return since < t1 ? f1 : f2;
 }
 
 function characterAt(beat) {
@@ -945,8 +957,12 @@ function render(songTime, beat) {
     // 换算出来的比例会随转向剧烈变化，杖会突然比人还高。
     liftPx: ((CONFIG.world.charScreenHeight ?? 0) * H) / 2,
   });
-  if (characterReady) {
-    world.characterBillboard(ctx, camera, cam, c.pos, characterFrame(), CONFIG.world.charSpriteSize, {
+  // ★ 不能再用 characterReady 当开关：它只由 character.webp 的 onload 置位，
+  //   而那个文件已经删了 —— 结果整块被跳过，人物彻底不画。
+  //   改成「拿到哪帧就画哪帧」，没有就跳过。
+  const charFrame = characterFrame();
+  if (charFrame) {
+    world.characterBillboard(ctx, camera, cam, c.pos, charFrame, CONFIG.world.charSpriteSize, {
       scale: CONFIG.world.charSpriteScale ?? 1,
       // 传像素值：render() 里直接有 H
       screenHeightPx: (CONFIG.world.charScreenHeight ?? 0) * H,
@@ -1250,7 +1266,14 @@ try {
       const playIt = debugPrologue !== null ? debugPrologue : shouldPlayPrologue();
       if (playIt) {
         markProloguePlayed();
+        // ★ 必须**现在**收菜单。menu.js 是等 onStart() 完成才 hide()，
+        //   而序章结尾有 360ms 淡出 —— 那段时间菜单还开着，就会闪一下初始界面。
+        //   先收掉，序章的黑底就盖在纯黑上了。
+        menu?.hide?.();
         await playPrologue();
+        // ★ 序章结束的一瞬间会闪回初始界面 —— 因为主菜单层这时才真正收起来。
+        //   这里再确认一次它已经藏好，再直接进游戏，中间不留白。
+        menu?.hide?.();
       }
       start();
     },
@@ -1301,6 +1324,61 @@ if (introEl && debugBeat !== null) {
   introEl.addEventListener('pointerdown', dismissIntro, true);
   window.addEventListener('keydown', dismissIntro, true);
 }
+
+if (debugVnChoice) {
+  import('./vn/prologue.js').then(({ playPrologue }) => {
+    playPrologue({
+      pages: [
+        {
+          choice: true,
+          image: 'assets/images/vn/20.png',
+          title: '请选择',
+          options: ['安全路线', '最快路线'],
+        },
+      ],
+    });
+  });
+}
+
+if (debugVnBlack) {
+  // 直接播一页黑屏打字，方便调效果
+  import('./vn/prologue.js').then(({ playPrologue }) => {
+    playPrologue({
+      pages: [{ black: true, text: debugVnBlack === '1' ? '我真的想好了，我还是想学美术。' : debugVnBlack, typeSec: 0.09 }],
+    });
+  });
+}
+
+/**
+ * 浏览器策略：AudioContext 在用户交互之前是 suspended，此时播放没有声音。
+ *
+ * ★ 关键：**每次**点击/按键都尝试唤醒，直到确认它真的在 running 为止。
+ *   之前用了一个「只试一次」的布尔锁 —— 如果第一次点击时 AudioEngine 还没
+ *   建好 AudioContext（ctx 是 undefined），那次唤醒就白做了，后面永远不再试，
+ *   于是表现成「有时候有声音，有时候没有」。
+ */
+let audioAwake = false;
+function wakeAudio() {
+  if (audioAwake) return;
+  try {
+    audio.init?.();
+    const ctx = audio.ctx ?? audio.context;
+    if (!ctx) return; // 还没建好，下一次手势再来
+    if (ctx.state === 'running') {
+      audioAwake = true;
+      return;
+    }
+    void ctx.resume?.();
+    // 再确认一次：resume 是异步的，下一拍才能读到 running
+    setTimeout(() => {
+      if (ctx.state === 'running') audioAwake = true;
+    }, 120);
+  } catch {
+    // 唤醒失败不该挡住游戏
+  }
+}
+window.addEventListener('pointerdown', wakeAudio, { capture: true, passive: true });
+window.addEventListener('keydown', wakeAudio, { capture: true });
 
 loadLevel().then(() => {
   if (autostart) start();
