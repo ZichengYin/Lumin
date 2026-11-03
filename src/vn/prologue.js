@@ -13,7 +13,7 @@
  *
  * ── 怎么加图片 ────────────────────────────────────────────
  *   图片放 assets/images/vn/，然后在 PAGES 里按顺序加一条：
- *     { image: 'assets/images/vn/16.png' }
+ *     { image: 'assets/images/vn/16.png', audio: 'assets/audio/vn/16.mp3' }
  *
  * ── 怎么加音频 ────────────────────────────────────────────
  *   音频放 assets/audio/vn/，在对应页填 audio：
@@ -30,29 +30,30 @@ const STORAGE_KEY = 'yuguang.prologuePlayed';
  *   audio      这一页的音效（可省略）
  */
 export const PAGES = [
-  { image: 'assets/images/vn/01.png' },
-  { image: 'assets/images/vn/02.png' },
+  { image: 'assets/images/vn/01.png', audio: 'assets/audio/vn/01.mp3' },
+  { image: 'assets/images/vn/02.png', audio: 'assets/audio/vn/02.mp3' },
   { black: true, text: '我真的想好了，我还是想学美术', typeSec: 0.1 },
-  { image: 'assets/images/vn/04.png' },
-  { image: 'assets/images/vn/05.png' },
-  { image: 'assets/images/vn/06.png' },
-  { image: 'assets/images/vn/07.png' },
+  { image: 'assets/images/vn/04.png', audio: 'assets/audio/vn/01.mp3' },
+  { image: 'assets/images/vn/05.png', audio: 'assets/audio/vn/05.mp3' },
+  { image: 'assets/images/vn/06.png', audio: 'assets/audio/vn/06.mp3' },
+  { image: 'assets/images/vn/07.png', audio: 'assets/audio/vn/07.mp3' },
   { black: true, text: '你能不能成熟一点', typeSec: 0.1 },
-  { image: 'assets/images/vn/09.png', flashBlack: true },
-  { image: 'assets/images/vn/10.png', flashBlack: true },
-  { image: 'assets/images/vn/11.png', flashBlack: true },
-  { image: 'assets/images/vn/12.png' },
-  { image: 'assets/images/vn/13.png' },
-  { image: 'assets/images/vn/14.png' },
-  { image: 'assets/images/vn/15.png' },
-  { image: 'assets/images/vn/16.png' },
-  { image: 'assets/images/vn/17.png' },
-  { image: 'assets/images/vn/18.png' },
-  { image: 'assets/images/vn/19.png' },
+  { image: 'assets/images/vn/09.png', flashBlack: true, audio: 'assets/audio/vn/09.mp3' },
+  { image: 'assets/images/vn/10.png', flashBlack: true, audio: 'assets/audio/vn/10.mp3' },
+  { image: 'assets/images/vn/11.png', flashBlack: true, audio: 'assets/audio/vn/11.mp3' },
+  { image: 'assets/images/vn/12.png', audio: 'assets/audio/vn/12.mp3' },
+  { image: 'assets/images/vn/13.png', audio: 'assets/audio/vn/13.mp3' },
+  { image: 'assets/images/vn/14.png', audio: 'assets/audio/vn/14.mp3' },
+  { image: 'assets/images/vn/15.png', audio: 'assets/audio/vn/15.mp3' },
+  { image: 'assets/images/vn/16.png', audio: 'assets/audio/vn/16.mp3' },
+  { image: 'assets/images/vn/17.png', audio: 'assets/audio/vn/17.mp3' },
+  { image: 'assets/images/vn/18.png', audio: 'assets/audio/vn/18.mp3' },
+  { image: 'assets/images/vn/19.png', audio: 'assets/audio/vn/19.mp3' },
   // 最后的选择页：背景 20.png，上方「请选择」，下方左右两个选项（黑白 UI）
   {
     choice: true,
     image: 'assets/images/vn/20.png',
+    audio: 'assets/audio/vn/20.mp3',
     title: '请选择导航路线',
     options: ['安全路线', '最快路线'],
   },
@@ -250,6 +251,15 @@ export function playPrologue({ pages = PAGES } = {}) {
       typeTimer = setTimeout(step, typeSpeed);
     }
 
+    /** 通关过一次才解锁「安全路线」 */
+    function isCleared() {
+      try {
+        return localStorage.getItem('yuguang.cleared') === '1';
+      } catch {
+        return false;
+      }
+    }
+
     /** 记下玩家的选择，供后续分支使用 */
     function recordChoice(v) {
       try {
@@ -287,9 +297,19 @@ export function playPrologue({ pages = PAGES } = {}) {
         btn.addEventListener('pointerdown', (e) => {
           e.stopPropagation();   // 别让遮罩层把这次点击当成「翻页」
         });
+        // 「安全路线」要通关过一次才解锁；未解锁时按钮存在但不可点、也不推进
+        const locked = label === '安全路线' && !isCleared();
+        if (locked) {
+          btn.disabled = true;
+          btn.style.opacity = '0.28';
+          btn.style.borderColor = 'rgba(255,255,255,0.35)';
+          btn.style.cursor = 'default';
+          btn.dataset.locked = '1';
+        }
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
           if (busy || done) return;
+          if (locked) return; // 锁着的选项点了什么都不做
           recordChoice(label);
           advance();
         });
@@ -304,7 +324,12 @@ export function playPrologue({ pages = PAGES } = {}) {
       if (!page) return;
       hint.textContent = `${i + 1} / ${pages.length}`;
 
+      // 先起音频 —— 放在最前面，选择页提前 return 也能播到
       stopAudio();
+      if (page.audio) {
+        audio = new Audio(page.audio);
+        audio.play().catch(() => {});
+      }
 
       // 选择页：背景图 + 两个按钮，点了才翻页
       if (page.choice) {
@@ -349,10 +374,6 @@ export function playPrologue({ pages = PAGES } = {}) {
         reveal();
       }
 
-      if (page.audio) {
-        audio = new Audio(page.audio);
-        audio.play().catch(() => {});
-      }
     }
 
     function finish() {

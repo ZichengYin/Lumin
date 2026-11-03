@@ -765,6 +765,12 @@ function frame() {
         const last = chart.segments[chart.hitCount - 1];
         if (beat > last.hitBeat + last.windowBeats(CONFIG.windows.ok)) {
           state.phase = 'finished';
+  // 通关标记：选择页据此决定「安全路线」能不能选
+  try {
+    localStorage.setItem('yuguang.cleared', '1');
+  } catch {
+    // 存不了也不影响
+  }
           audio.stop();
         }
       }
