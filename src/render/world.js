@@ -628,3 +628,113 @@ export function turnArrow(ctx, camera, cam, pos, inAngleRad, turnRad, size, { al
   }
   ctx.restore();
 }
+
+
+/**
+ * 正对镜头的角色立牌。
+ *
+ * 和 character() 的区别是**不贴地**：
+ *   character()   把素材铺在**地面平面**上 → 会被透视压扁、斜切
+ *   这个函数      在屏幕空间竖直画出来 → 素材永远是正的，宽高比严格不变
+ *
+ * 尺寸换算：先把角色脚下那个点投影到屏幕，再投影它旁边「世界尺寸
+ * worldSize」处的点，两点在屏幕上的距离就是 worldSize 对应的像素数。
+ * 这样远近变化仍然生效（远处自然变小），但不会被地面透视拉伸。
+ *
+ * @param {number} scale 额外缩放系数（不改素材、不改宽高比）
+ */
+export function characterBillboard(ctx, camera, cam, pos, image, worldSize, { scale = 1, invert = false, screenHeightPx = 0 } = {}) {
+  if (!image || !image.complete || !image.naturalWidth) return;
+
+  const foot = camera.project(pos, cam);
+  if (!foot) return;
+  // 用世界 x 方向的一小段量「世界尺寸 → 像素」
+  const ref = camera.project({ x: pos.x + worldSize / 2, z: pos.z }, cam);
+  if (!ref) return;
+
+  // screenHeight > 0 时用**固定屏幕占比**，完全不受透视影响。
+  // 相机平滑跟随或转弯时，角色离镜头的实际距离会浮动 —— 按透视换算的话
+  // 人物会突然变大一下。固定占比就没这个问题。
+  const halfPx = Math.hypot(ref.x - foot.x, ref.y - foot.y);
+  const h = screenHeightPx > 0 ? screenHeightPx * scale : halfPx * 2 * scale;
+  if (!(h > 0.5)) return;
+  // 严格按素材自己的宽高比
+  const w = h * (image.naturalWidth / image.naturalHeight);
+
+  ctx.save();
+  if (invert) ctx.filter = 'invert(1)';
+  ctx.drawImage(image, foot.x - w / 2, foot.y - h, w, h); // 底边落在脚下那个点
+  ctx.restore();
+}
+
+
+/**
+ * 立体盲杖：从手（离地一定高度）斜下到地面上的杖尖，整体画成一个锥形。
+ *
+ * 原来的 cane() 是**贴地**的一条线 —— 那看起来像地上画的一笔，不像握着的杖。
+ * 现在：
+ *   · 地面那个圆（sweepRing）不动，仍然是杖扫过的轨迹
+ *   · 杖本身从**手心**（抬高 liftWorld）连到圆上的杖尖
+ *   · 锥形 = 从手心那个点向地面圆的两条切线围成的三角形，带一点透明的渐变
+ *
+ * liftWorld 由调用方给（人物高度的一半），换算成屏幕像素用和立牌一样的办法：
+ * 投影一段世界横向偏移，量出「世界单位 → 像素」的比例。
+ */
+export function caneCone(ctx, camera, cam, center, angleRad, radius, { liftPx = 0, alpha = 1 } = {}) {
+  const foot = camera.project(center, cam);
+  if (!foot) return;
+  // ★ 高度由调用方直接给像素值。
+  //   之前用「世界横向偏移」换算世界单位→像素的比例，那个比例在角色转向、
+  //   横向几乎与视线平行时会急剧放大 —— 于是杖的高度会突然超过人物。
+
+  // 地面上的杖尖：角度 angleRad、半径 radius 的那个点
+  const tipW = { x: center.x + Math.cos(angleRad) * radius, z: center.z + Math.sin(angleRad) * radius };
+  const tip = camera.project(tipW, cam);
+  if (!tip) return;
+
+  // 锥底：杖尖两侧各偏一点（垂直于杖的方向），形成有宽度的锥
+  const halfW = radius * 0.34;
+  const nx = -Math.sin(angleRad);
+  const nz = Math.cos(angleRad);
+  const b1 = camera.project({ x: tipW.x + nx * halfW, z: tipW.z + nz * halfW }, cam);
+  const b2 = camera.project({ x: tipW.x - nx * halfW, z: tipW.z - nz * halfW }, cam);
+  if (!b1 || !b2) return;
+
+  // 手心：角色脚下那个点往上抬 liftPx
+  const hand = { x: foot.x, y: foot.y - liftPx };
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  // 锥体：手心 → 两个底角
+  const g = ctx.createLinearGradient(hand.x, hand.y, tip.x, tip.y);
+  g.addColorStop(0, 'rgba(232, 226, 214, 0.42)');
+  g.addColorStop(1, 'rgba(232, 226, 214, 0.06)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.moveTo(hand.x, hand.y);
+  ctx.lineTo(b1.x, b1.y);
+  ctx.lineTo(b2.x, b2.y);
+  ctx.closePath();
+  ctx.fill();
+
+  // 两条棱不画 —— 它们看起来像 ok / miss 的界限线，容易误读。
+  // 锥体只靠上面那层淡淡的填充表达体积，画面里只有一根线：杖本身。
+
+  // 杖的中轴：手心 → 杖尖
+  ctx.strokeStyle = 'rgba(246, 242, 232, 0.92)';
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(hand.x, hand.y);
+  ctx.lineTo(tip.x, tip.y);
+  ctx.stroke();
+
+  // 杖尖的实心点
+  ctx.fillStyle = 'rgba(250, 246, 236, 0.95)';
+  ctx.beginPath();
+  ctx.arc(tip.x, tip.y, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}

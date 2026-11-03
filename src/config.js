@@ -56,6 +56,9 @@ export const CONFIG = {
     well2: 'assets/images/well2.png',
     /** 盲人。俯视剪影，透明背景 */
     character: 'assets/images/character.webp',
+    /** 角色两帧：每次击打先 ch1 再 ch2，做出跑动感 */
+    ch1: 'assets/images/ch1.png',
+    ch2: 'assets/images/ch2.png',
   },
 
   // ── 世界尺度 ────────────────────────────────────────────
@@ -70,14 +73,27 @@ export const CONFIG = {
     /** 盲人的世界半径 */
     charRadius: 0.5,
     /** 素材高度对应的世界尺寸（俯视剪影的"长"） */
-    charSpriteSize: 2.6,
+    charSpriteSize: 7,
+    /**
+     * 角色显示缩放系数。只影响屏幕上的大小，**不改素材、不改宽高比**。
+     * 素材四周有留白的话，人物在游戏里会显得小 —— 调大这个数就行。
+     */
+    /**
+     * 角色**固定占屏幕高度的比例**。
+     * 不用透视换算，所以无论相机怎么动、离镜头多远，大小都不变。
+     */
+    charScreenHeight: 0.30,
+    charSpriteScale: 1,
+    /** 两帧跑动的时间点（秒，从击打瞬间算起）*/
+    charFrame1Sec: 0.18,
+    charFrame2Sec: 0.5,
     /**
      * 是否把角色素材反转亮度。
      * 素材是「黑剪影 + 白描边」，在纯黑背景上黑色等于不存在、只剩一堆看不清的线。
      * 反转之后是「白剪影 + 暗描边」，形状和姿势才读得出来。
      * 如果以后换成浅色/白描线的素材，把它设成 false。
      */
-    charInvert: true,
+    charInvert: false,
     /** 一个展望多远（世界单位），用来决定画多少段 */
     viewDistance: 30,
     /** 转向箭头的箭杆长度（世界单位） */

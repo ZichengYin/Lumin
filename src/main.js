@@ -34,6 +34,7 @@ import { buildWarnings } from './core/warnings.js';
 import { AudioEngine } from './audio/audio.js';
 import { VoiceEngine } from './audio/voice.js';
 import { createMenu } from './menu.js';
+import { shouldPlayPrologue, markProloguePlayed, playPrologue, resetPrologue } from './vn/prologue.js';
 
 // ── URL 参数 ────────────────────────────────────────────────
 const query = new URLSearchParams(location.search);
@@ -64,6 +65,8 @@ const debugPaused = query.has('paused');
 const debugRevealR = query.has('revealR') ? Number(query.get('revealR')) : null;
 /** ?axes=1 画出 along / lateral 的屏幕方向（摆物件时对方向用） */
 const debugAxes = query.has('axes');
+/** ?prologue=1 强制播序章（调试用）；?prologue=0 强制跳过 */
+const debugPrologue = query.has('prologue') ? query.get('prologue') !== '0' : null;
 
 // ── DOM ────────────────────────────────────────────────────
 const canvasEl = document.getElementById('stage');
@@ -186,6 +189,10 @@ const blockB = loadImg(CONFIG.assets.block2);
 const wellA = loadImg(CONFIG.assets.well1);
 const wellB = loadImg(CONFIG.assets.well2);
 
+// 角色两帧：每次击打 ch1 → ch2 → ch1，形成跑动
+const ch1Image = loadImg(CONFIG.assets.ch1);
+const ch2Image = loadImg(CONFIG.assets.ch2);
+
 function emptyStats() {
   return {
     PERFECT: 0,
@@ -287,6 +294,23 @@ async function loadLevel() {
 }
 
 /** 盲人此刻站在哪一格、朝向哪里（两者都是时间的纯函数） */
+/**
+ * 当前该用哪一帧角色图。
+ *
+ * 每次击打先放 ch1（起脚），再放 ch2（落地），然后回到 ch1 —— 两帧就够
+ * 做出跑动的错觉，不需要真的做动画循环。没击中时一直停在 ch1。
+ *
+ * 时间点用 state.revealAt（最近一次击打的时刻），和涟漪用的是同一个。
+ */
+function characterFrame() {
+  if (!ch2Image?.complete || !ch2Image.naturalWidth) return characterImage;
+  const since = (performance.now() - state.revealAt) / 1000;
+  const f1 = CONFIG.world.charFrame1Sec ?? 0.09;
+  const f2 = CONFIG.world.charFrame2Sec ?? 0.24;
+  if (since < 0 || since >= f2) return ch1Image?.complete && ch1Image.naturalWidth ? ch1Image : characterImage;
+  return since < f1 ? (ch1Image ?? characterImage) : ch2Image;
+}
+
 function characterAt(beat) {
   const ps = planetStateAtBeat(state.chart, beat);
   const tile = state.track.points[ps.index];
@@ -857,7 +881,6 @@ function render(songTime, beat) {
     });
   }
   world.blindPathGrid(ctx, camera, cam, track, { ...range, cell: CONFIG.world.pathCell, ambient, reveal });
-  world.hitMarks(ctx, camera, cam, track, { ...range, ambient, reveal });
 
   // ── 地面上的小装饰 ─────────────────────────────────────
   const R = spacing / 2;
@@ -907,7 +930,6 @@ function render(songTime, beat) {
       };
       world.blindPath(ctx, camera, cam, track, rippleRange);
       world.blindPathGrid(ctx, camera, cam, track, { ...rippleRange, cell: CONFIG.world.pathCell });
-      world.hitMarks(ctx, camera, cam, track, rippleRange);
 
       ctx.restore();
     }
@@ -918,9 +940,16 @@ function render(songTime, beat) {
   // 人物是玩家唯一的坐标参照。跟着一起变暗的话，一分钟之后连自己站在哪
   // 都看不出来 —— 而「看不见路」和「看不见自己」是完全不同的两件事，
   // 后者只会让人失去方位感，不是这个游戏想制造的体验。
-  world.cane(ctx, camera, cam, c.pos, c.ps.planetAngle, R);
+  world.caneCone(ctx, camera, cam, c.pos, c.ps.planetAngle, R, {
+    // 杖的高度 = 人物屏幕高度的一半。直接用像素，不做透视换算 ——
+    // 换算出来的比例会随转向剧烈变化，杖会突然比人还高。
+    liftPx: ((CONFIG.world.charScreenHeight ?? 0) * H) / 2,
+  });
   if (characterReady) {
-    world.character(ctx, camera, cam, c.pos, c.yaw + Math.PI, characterImage, CONFIG.world.charSpriteSize, {
+    world.characterBillboard(ctx, camera, cam, c.pos, characterFrame(), CONFIG.world.charSpriteSize, {
+      scale: CONFIG.world.charSpriteScale ?? 1,
+      // 传像素值：render() 里直接有 H
+      screenHeightPx: (CONFIG.world.charScreenHeight ?? 0) * H,
       invert: CONFIG.world.charInvert,
     });
   }
@@ -933,6 +962,7 @@ function render(songTime, beat) {
   //
   // 状态：井盖用 well1/well2 交叉淡入；**左侧障碍暂时借用角色贴图**当占位，
   //       等素材画好再换（改 CONFIG.assets 里加一条即可）。
+  let appearAlpha = 1;
   for (const prop of track.props) {
     // ★ 可见窗口：**经过它之前 2 秒 ~ 之后 2 秒**，一共 4 秒。
     //
@@ -942,10 +972,16 @@ function render(songTime, beat) {
     if (Number.isInteger(prop.tile)) {
       const seg = chart.segments[Math.min(prop.tile, chart.hitCount - 1)];
       const atSec = seg ? seg.hitBeat * (60 / chart.bpm) : 0;
-      // 提前 0.8 秒出现（2 秒太早，物件会在还很远的时候就冒出来），
-      // 走过去之后留 2 秒再消失。
-      // 调试模式（?beat=）不受这个窗口限制 —— 否则摆物件时永远看不到它。
-      if (debugBeat === null && (songTime < atSec - 0.8 || songTime > atSec + 2)) continue;
+      const LEAD = 0.5; // 提前 0.5 秒出现，这段时间里慢慢浮现
+      // 走过之后再留 2 秒才消失。
+      if (debugBeat === null && (songTime < atSec - LEAD || songTime > atSec + 2)) continue;
+      // 慢慢浮现：从"刚进入窗口"到"走到它"这段时间里，透明度 0 → 1。
+      // 不是啪一下出现 —— 那会像凭空弹出来的图标。
+      if (debugBeat === null && songTime < atSec) {
+        appearAlpha = Math.max(0, Math.min(1, (songTime - (atSec - LEAD)) / LEAD));
+      } else {
+        appearAlpha = 1;
+      }
     }
 
     // ② 失明之后只看得到涟漪那一圈里的东西 —— 障碍也不能例外。
@@ -954,7 +990,7 @@ function render(songTime, beat) {
       if (prop.tile < c.ps.index - 2 || prop.tile > c.ps.index + 3) continue;
     }
 
-    const alpha = world.hintAlpha(camera, cam, prop, state.fade);
+    const alpha = world.hintAlpha(camera, cam, prop, state.fade) * appearAlpha;
     if (alpha <= 0) continue;
 
     if (prop.type === 'manhole') {
@@ -1206,7 +1242,16 @@ try {
     // 调试模式：跳过主界面，直接进游戏画面
   } else {
   menu = createMenu({
-    onStart: () => {
+    onStart: async () => {
+      // 序章只在**第一次**从主界面点 Restart 时放一次；
+      // 之后（含死亡重开、刷新页面）都直接进游戏。
+      // ?prologue=1 → 每次都播（调序章用）；?prologue=0 → 强制跳过
+      // 不带参数 → 按 localStorage 里「看过没有」决定
+      const playIt = debugPrologue !== null ? debugPrologue : shouldPlayPrologue();
+      if (playIt) {
+        markProloguePlayed();
+        await playPrologue();
+      }
       start();
     },
     // 点 Setting 相当于局内 Esc：设置面板画在 canvas 上，
@@ -1302,6 +1347,7 @@ Object.assign(window, {
       return state.paused;
     },
     togglePause,
+      resetPrologue,
     get now() {
       return audio.now;
     },
